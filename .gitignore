@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build output
+dist/
+build/
+
+# OS/editor files
+.DS_Store
+*.swp
+
+# Supabase local volumes and generated state
+supabase/.temp/
+supabase/volumes/
