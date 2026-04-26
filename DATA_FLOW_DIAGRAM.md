@@ -43,7 +43,7 @@ flowchart TD
 - Core learning flow: `students` + `skills` drive session queueing, attempts, and item mastery updates.
 - Agent flow: `agents` create `agent_runs`, write `agent_actions`, and adjust `student_tuning` that influences future sessions.
 - Weekly summaries are persisted in `weekly_insights` for parent review and IEP reporting.
-- API layer now exposes stubbed route groups for session, items, AI, dashboard, agents, and export flows.
+- API layer now includes SRS-driven queue building and mastery updates in `/api/items/*`.
 
 ## Frontend Route Shell (Design System Foundation)
 
@@ -66,4 +66,51 @@ flowchart TD
   cssTokens --> routeOutlet
   cssTypography --> routeOutlet
   cssComponents --> routeOutlet
+```
+
+## Today Page Flow (Mood + Skill Start)
+
+```mermaid
+flowchart TD
+  todayPage[TodayPage] --> moodCheckIn[MoodCheckIn]
+  todayPage --> skillPicker[SkillTileGrid]
+  todayPage --> planCard[TodayPlanCard]
+
+  todayPage --> dashboardSkillsApi[GET /api/dashboard/skills]
+  dashboardSkillsApi --> skillsTbl[skills]
+  dashboardSkillsApi --> studentSkillLevelsTbl[student_skill_levels]
+  dashboardSkillsApi --> itemMasteryTbl[item_mastery]
+  dashboardSkillsApi --> suggestedSkillSvc[getSuggestedSkill]
+
+  planCard --> sessionStartApi[POST /api/session/start]
+  sessionStartApi --> sessionsTbl[sessions]
+  sessionStartApi --> skillsLookup[skills]
+
+  todayPage --> moodDecision{lowMoodOrLowScore}
+  moodDecision -->|yes| breakRoute[/break]
+  moodDecision -->|no| practiceRoute[/practice/:skillName]
+```
+
+## SRS Queue + Attempt Flow
+
+```mermaid
+flowchart TD
+  practicePage[PracticePage] --> queueApi[GET /api/items/queue/:skill_id?session_id]
+  queueApi --> sessionValidation[ValidateActiveSession]
+  sessionValidation --> queueBuilder[buildSessionQueue]
+  queueBuilder --> cacheCheck[next_session_queue exists]
+  cacheCheck -->|yes cache hit| cachedItems[UseCachedQueue]
+  cacheCheck -->|no cache| ratioBuilder[Build60_25_15Mix]
+  ratioBuilder --> itemMasteryTbl[item_mastery]
+  ratioBuilder --> itemsTbl[items]
+  cachedItems --> queueResponse[QueueResponse]
+  ratioBuilder --> queueResponse
+
+  practicePage --> attemptApi[POST /api/items/:id/attempt]
+  attemptApi --> attemptInsert[InsertAttemptsRow]
+  attemptInsert --> masteryStats[LoadMasteryStatsAndTuning]
+  masteryStats --> srsPure[srs.js pure functions]
+  srsPure --> masteryUpdate[Update item_mastery]
+  masteryUpdate --> levelDecision[AdvanceOrDrop student_skill_levels]
+  levelDecision --> nextItemResponse[NextItemOrSessionComplete]
 ```

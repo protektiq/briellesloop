@@ -38,3 +38,4 @@ const getPool = () => {
 };
 
 export const query = (text, params = []) => getPool().query(text, params);
+export const getClient = () => getPool().connect();

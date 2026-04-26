@@ -1,0 +1,204 @@
+const TIER_MIN = 0;
+const TIER_MAX = 4;
+const RESPONSE_TIME_MIN = 0;
+const RESPONSE_TIME_MAX = 600;
+
+const REVIEW_INTERVAL_DAYS_BY_TIER = {
+  0: 1,
+  1: 1,
+  2: 3,
+  3: 7,
+  4: 30,
+};
+
+const isFiniteNumber = (value) => typeof value === "number" && Number.isFinite(value);
+
+const assertIntegerInRange = (value, min, max, label) => {
+  if (!Number.isInteger(value) || value < min || value > max) {
+    throw new Error(`${label} must be an integer between ${min} and ${max}.`);
+  }
+};
+
+const assertNumberInRange = (value, min, max, label) => {
+  if (!isFiniteNumber(value) || value < min || value > max) {
+    throw new Error(`${label} must be a number between ${min} and ${max}.`);
+  }
+};
+
+const normalizeMasteryStats = (value) => {
+  if (!value || typeof value !== "object") {
+    throw new Error("masteryStats must be an object.");
+  }
+
+  const masteryStats = {
+    consecutive_correct: Number.parseInt(String(value.consecutive_correct), 10),
+    total_correct: Number.parseInt(String(value.total_correct), 10),
+    distinct_sessions_correct: Number.parseInt(String(value.distinct_sessions_correct), 10),
+    all_responses_under_20s: value.all_responses_under_20s,
+  };
+
+  if (
+    !Number.isInteger(masteryStats.consecutive_correct) ||
+    masteryStats.consecutive_correct < 0 ||
+    !Number.isInteger(masteryStats.total_correct) ||
+    masteryStats.total_correct < 0 ||
+    !Number.isInteger(masteryStats.distinct_sessions_correct) ||
+    masteryStats.distinct_sessions_correct < 0 ||
+    typeof masteryStats.all_responses_under_20s !== "boolean"
+  ) {
+    throw new Error("masteryStats fields are invalid.");
+  }
+
+  return masteryStats;
+};
+
+const getNumericTuningValue = (tuning, names, label) => {
+  if (!tuning || typeof tuning !== "object") {
+    throw new Error("tuning must be an object.");
+  }
+
+  for (const name of names) {
+    const candidate = tuning[name];
+    if (isFiniteNumber(candidate)) {
+      return candidate;
+    }
+  }
+
+  throw new Error(`${label} is missing in tuning.`);
+};
+
+const normalizeAdvanceTuning = (tuning) => ({
+  tierAdvanceAccuracy: getNumericTuningValue(
+    tuning,
+    ["tierAdvanceAccuracy", "tier_advance_accuracy"],
+    "tier_advance_accuracy",
+  ),
+  tierAdvanceResponseTime: getNumericTuningValue(
+    tuning,
+    ["tierAdvanceResponseTime", "tier_advance_response_time"],
+    "tier_advance_response_time",
+  ),
+});
+
+const normalizeDropTuning = (tuning) => ({
+  weeklyDropAccuracy: getNumericTuningValue(
+    tuning,
+    ["weeklyDropAccuracy", "weekly_drop_accuracy", "tier_drop_accuracy"],
+    "weekly_drop_accuracy",
+  ),
+});
+
+export const calculateNextTier = (currentTier, isCorrect, responseTimeSeconds, masteryStats, tuning) => {
+  assertIntegerInRange(currentTier, TIER_MIN, TIER_MAX, "currentTier");
+  if (typeof isCorrect !== "boolean") {
+    throw new Error("isCorrect must be a boolean.");
+  }
+  assertNumberInRange(
+    responseTimeSeconds,
+    RESPONSE_TIME_MIN,
+    RESPONSE_TIME_MAX,
+    "responseTimeSeconds",
+  );
+
+  const normalizedMasteryStats = normalizeMasteryStats(masteryStats);
+  const { tierAdvanceResponseTime } = normalizeAdvanceTuning(tuning);
+  if (tierAdvanceResponseTime <= 0 || tierAdvanceResponseTime > RESPONSE_TIME_MAX) {
+    throw new Error("tier_advance_response_time must be between 0 and 600.");
+  }
+
+  if (!isCorrect) {
+    return 1;
+  }
+
+  const projectedConsecutiveCorrect = normalizedMasteryStats.consecutive_correct + 1;
+  const projectedTotalCorrect = normalizedMasteryStats.total_correct + 1;
+
+  if (currentTier === 0) {
+    return 1;
+  }
+
+  if (currentTier === 1) {
+    return projectedConsecutiveCorrect >= 2 ? 2 : 1;
+  }
+
+  if (currentTier === 2) {
+    if (projectedConsecutiveCorrect >= 4 && responseTimeSeconds < tierAdvanceResponseTime) {
+      return 3;
+    }
+    return 2;
+  }
+
+  if (currentTier === 3) {
+    if (
+      projectedTotalCorrect >= 6 &&
+      normalizedMasteryStats.distinct_sessions_correct >= 3 &&
+      normalizedMasteryStats.all_responses_under_20s
+    ) {
+      return 4;
+    }
+    return 3;
+  }
+
+  return 4;
+};
+
+export const calculateNextReviewAt = (tier, lastSeenAt) => {
+  assertIntegerInRange(tier, TIER_MIN, TIER_MAX, "tier");
+
+  const lastSeenDate = new Date(lastSeenAt);
+  if (Number.isNaN(lastSeenDate.getTime())) {
+    throw new Error("lastSeenAt must be a valid date/time value.");
+  }
+
+  const intervalDays = REVIEW_INTERVAL_DAYS_BY_TIER[tier];
+  const intervalMilliseconds = intervalDays * 24 * 60 * 60 * 1000;
+  const nextReviewDate = new Date(lastSeenDate.getTime() + intervalMilliseconds);
+  return nextReviewDate.toISOString();
+};
+
+export const shouldAdvanceSkillLevel = (recentAttempts, currentTuning) => {
+  if (!Array.isArray(recentAttempts)) {
+    throw new Error("recentAttempts must be an array.");
+  }
+
+  const { tierAdvanceAccuracy, tierAdvanceResponseTime } = normalizeAdvanceTuning(currentTuning);
+  if (tierAdvanceAccuracy < 0 || tierAdvanceAccuracy > 100) {
+    throw new Error("tier_advance_accuracy must be between 0 and 100.");
+  }
+  if (tierAdvanceResponseTime <= 0 || tierAdvanceResponseTime > RESPONSE_TIME_MAX) {
+    throw new Error("tier_advance_response_time must be between 0 and 600.");
+  }
+
+  const tier3Attempts = recentAttempts
+    .filter((attempt) => attempt && typeof attempt === "object" && Number(attempt.tier) === 3)
+    .map((attempt) => {
+      const isCorrect = attempt.is_correct;
+      const responseTimeSeconds = Number(attempt.response_time_seconds);
+      if (typeof isCorrect !== "boolean" || !isFiniteNumber(responseTimeSeconds) || responseTimeSeconds < 0) {
+        throw new Error("Each Tier-3 attempt must include valid is_correct and response_time_seconds values.");
+      }
+      return { isCorrect, responseTimeSeconds };
+    });
+
+  if (tier3Attempts.length < 10) {
+    return false;
+  }
+
+  const totalCorrect = tier3Attempts.reduce((sum, attempt) => sum + (attempt.isCorrect ? 1 : 0), 0);
+  const accuracyPercent = (totalCorrect / tier3Attempts.length) * 100;
+  const avgResponseSeconds =
+    tier3Attempts.reduce((sum, attempt) => sum + attempt.responseTimeSeconds, 0) /
+    tier3Attempts.length;
+
+  return accuracyPercent >= tierAdvanceAccuracy && avgResponseSeconds < tierAdvanceResponseTime;
+};
+
+export const shouldDropSkillLevel = (weeklyAccuracy, currentTuning) => {
+  assertNumberInRange(weeklyAccuracy, 0, 100, "weeklyAccuracy");
+  const { weeklyDropAccuracy } = normalizeDropTuning(currentTuning);
+  if (weeklyDropAccuracy < 0 || weeklyDropAccuracy > 100) {
+    throw new Error("weekly_drop_accuracy must be between 0 and 100.");
+  }
+
+  return weeklyAccuracy < weeklyDropAccuracy;
+};
