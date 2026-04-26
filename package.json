@@ -10,5 +10,11 @@
     "dev:frontend": "npm run dev --workspace frontend",
     "dev:backend": "npm run dev --workspace backend",
     "build": "npm run build --workspace frontend"
+  },
+  "dependencies": {
+    "anthropic": "^0.0.0",
+    "cors": "^2.8.6",
+    "react-router-dom": "^7.14.2",
+    "zustand": "^5.0.12"
   }
 }

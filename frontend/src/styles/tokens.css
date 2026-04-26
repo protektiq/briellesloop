@@ -1,0 +1,24 @@
+:root {
+  --bg: #fff8ee;
+  --bg-soft: #fbefd8;
+  --bg-deeper: #f5e4c3;
+  --ink: #2a2118;
+  --ink-soft: #5c4f3f;
+  --ink-faint: #8a7b68;
+  --accent: #e85d2f;
+  --accent-deep: #c44318;
+  --green: #5c8f4c;
+  --green-deep: #3f6a33;
+  --blue: #3b6e91;
+  --blue-soft: #dceaf2;
+  --pink: #e89aaf;
+  --yellow: #f5c443;
+  --shadow-sm: 0 3px 0 rgba(42, 33, 24, 0.1);
+  --shadow: 0 5px 0 rgba(42, 33, 24, 0.14);
+  --shadow-lg: 0 8px 0 rgba(42, 33, 24, 0.16);
+  --radius: 18px;
+  --radius-sm: 12px;
+  --radius-lg: 24px;
+  --display: "Fraunces", Georgia, serif;
+  --body: "Nunito", sans-serif;
+}

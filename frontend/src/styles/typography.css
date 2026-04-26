@@ -1,0 +1,75 @@
+@import url("https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;0,9..144,800;1,9..144,500;1,9..144,600&family=Nunito:wght@400;600;700;800&display=swap");
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  font-family: var(--body);
+  color: var(--ink);
+  background: var(--bg);
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-image: radial-gradient(circle at 5% 8%, rgba(232, 93, 47, 0.05) 0%, transparent 35%),
+    radial-gradient(circle at 95% 30%, rgba(59, 110, 145, 0.04) 0%, transparent 35%),
+    radial-gradient(circle at 50% 90%, rgba(245, 196, 67, 0.04) 0%, transparent 40%);
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+p {
+  margin: 0;
+}
+
+.display-xl {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: clamp(2.4rem, 5vw, 3.5rem);
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+
+.display-lg {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: clamp(2rem, 3vw, 2.375rem);
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+
+.heading-lg {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: clamp(1.7rem, 2.4vw, 2rem);
+  line-height: 1.05;
+}
+
+.heading-md {
+  font-family: var(--display);
+  font-weight: 600;
+  font-size: 1.125rem;
+  line-height: 1.2;
+}
+
+.ui-label {
+  font-size: 0.75rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+em.accent {
+  color: var(--accent);
+  font-style: italic;
+  font-weight: 600;
+}
