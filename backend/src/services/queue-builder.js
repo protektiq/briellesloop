@@ -158,6 +158,9 @@ const queryPool = async (studentId, skillId, tierFilter, limit) => {
 };
 
 const queryNewPool = async (studentId, skillId, limit) => {
+  // Prefer AI-generated items over placeholder seed rows; among AI items, prefer
+  // the freshest. Placeholders rank last so they only appear if there aren't
+  // enough real items.
   const result = await query(
     `
       SELECT
@@ -176,7 +179,13 @@ const queryNewPool = async (studentId, skillId, limit) => {
        AND im.student_id = $1
       WHERE i.skill_id = $2
         AND (im.item_id IS NULL OR im.tier = 0)
-      ORDER BY i.created_at ASC
+      ORDER BY
+        CASE
+          WHEN i.metadata ->> 'seed_source' = '006_item_seed' THEN 1
+          ELSE 0
+        END ASC,
+        i.ai_generated DESC,
+        i.created_at DESC
       LIMIT $3
     `,
     [studentId, skillId, limit],

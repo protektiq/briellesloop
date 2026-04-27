@@ -1,9 +1,16 @@
 import { Router } from "express";
+import { generateHint } from "../services/grader.js";
+import { query } from "../db.js";
 
 const router = Router();
 
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 const isNonEmptyString = (value, maxLength = 2_000) =>
   typeof value === "string" && value.trim().length > 0 && value.trim().length <= maxLength;
+
+const isUuid = (value) => typeof value === "string" && UUID_REGEX.test(value.trim());
 
 router.post("/generate", async (req, res, next) => {
   try {
@@ -65,23 +72,65 @@ router.post("/grade", async (req, res, next) => {
 
 router.post("/hint", async (req, res, next) => {
   try {
-    const { item_id: itemId, response_so_far: responseSoFar } = req.body ?? {};
+    const { item_id: itemId, response_so_far: rawResponseSoFar } = req.body ?? {};
 
-    if (!isNonEmptyString(itemId, 64) || !isNonEmptyString(responseSoFar, 2_000)) {
+    if (!isUuid(itemId)) {
       return res.status(400).json({
         error: "Invalid hint payload.",
-        fields: {
-          item_id: "Required non-empty string up to 64 chars.",
-          response_so_far: "Required non-empty string up to 2000 chars.",
-        },
+        field: "item_id must be a valid UUID.",
+      });
+    }
+
+    let responseSoFar = "";
+    if (rawResponseSoFar !== undefined && rawResponseSoFar !== null) {
+      if (typeof rawResponseSoFar !== "string" || rawResponseSoFar.length > 2_000) {
+        return res.status(400).json({
+          error: "Invalid response_so_far.",
+          field: "response_so_far must be a string up to 2000 chars when provided.",
+        });
+      }
+      responseSoFar = rawResponseSoFar;
+    }
+
+    const itemResult = await query(
+      `
+        SELECT i.id, i.skill_id, i.level, i.item_type, i.prompt, i.answer, i.metadata, sk.name AS skill_name
+        FROM items i
+        INNER JOIN skills sk ON sk.id = i.skill_id
+        WHERE i.id = $1
+        LIMIT 1
+      `,
+      [itemId.trim()],
+    );
+
+    if (itemResult.rowCount === 0) {
+      return res.status(404).json({
+        error: "Item not found.",
+      });
+    }
+
+    const itemRow = itemResult.rows[0];
+    if (itemRow.skill_name !== "math") {
+      return res.status(400).json({
+        error: "Hint endpoint only supports math items in this milestone.",
+      });
+    }
+
+    let hint;
+    try {
+      hint = await generateHint(itemRow, responseSoFar);
+    } catch (hintError) {
+      const message = hintError instanceof Error ? hintError.message : "Hint generation failed.";
+      return res.status(502).json({
+        error: "Hint unavailable.",
+        message,
       });
     }
 
     return res.json({
-      request_id: "hnt_33946c61",
-      item_id: itemId.trim(),
-      hint: "Try rewriting division as repeated subtraction or as the inverse of multiplication.",
-      hint_level: 1,
+      item_id: itemRow.id,
+      hint_text: hint.hint_text,
+      hint_level: hint.hint_level,
       generated_at: new Date().toISOString(),
     });
   } catch (error) {

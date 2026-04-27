@@ -114,3 +114,37 @@ flowchart TD
   masteryUpdate --> levelDecision[AdvanceOrDrop student_skill_levels]
   levelDecision --> nextItemResponse[NextItemOrSessionComplete]
 ```
+
+## Math Activity Loop (Claude generation + grading + hint)
+
+```mermaid
+flowchart TD
+  practicePage[PracticePage math] --> queueApi[GET /api/items/queue/math?session_id]
+  queueApi --> ensureItems[ensureMathQueueItems]
+  ensureItems --> contentGenerator[content-generator.generateMathItem]
+  contentGenerator --> claudeApi[Claude messages API]
+  contentGenerator --> aiGenerationsTbl[ai_generations cache]
+  contentGenerator --> itemsTbl[items]
+  contentGenerator --> itemMasteryTbl[item_mastery tier 0]
+  queueApi --> queueBuilderMath[buildSessionQueue 60/25/15]
+  queueBuilderMath --> queueResponseMath[QueueResponse]
+
+  practicePage --> attemptApiMath[POST /api/items/:id/attempt]
+  attemptApiMath --> graderSvc[grader.gradeAttempt]
+  graderSvc --> claudeApi
+  graderSvc --> aiGenerationsTbl
+  attemptApiMath --> attemptsTbl[attempts ai_feedback]
+  attemptApiMath --> itemMasteryTbl
+  attemptApiMath --> studentSkillLevelsTbl[student_skill_levels]
+  attemptApiMath --> attemptResp[NextItem or sessionComplete + tier_changed]
+
+  practicePage --> hintApi[POST /api/ai/hint]
+  hintApi --> hintSvc[grader.generateHint]
+  hintSvc --> claudeApi
+  hintSvc --> aiGenerationsTbl
+  hintApi --> coachCard[CoachCard hint]
+
+  practicePage --> completeRoute[/practice/math/complete]
+  completeRoute --> sessionEndApi[POST /api/session/:id/end]
+  sessionEndApi --> sessionsEndedAt[sessions ended_at + items_attempted/correct]
+```

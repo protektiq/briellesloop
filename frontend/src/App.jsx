@@ -4,6 +4,7 @@ import AgentActivityPage from './pages/AgentActivityPage'
 import BrainBreakPage from './pages/BrainBreakPage'
 import ParentDashboardPage from './pages/ParentDashboardPage'
 import PracticePage from './pages/PracticePage'
+import SessionCompletePage from './pages/SessionCompletePage'
 import SettingsPage from './pages/SettingsPage'
 import TodayPage from './pages/TodayPage'
 
@@ -14,6 +15,10 @@ const App = () => {
         <Route element={<Layout />}>
           <Route path="/" element={<TodayPage />} />
           <Route path="/practice/:skillName" element={<PracticePage />} />
+          <Route
+            path="/practice/:skillName/complete"
+            element={<SessionCompletePage />}
+          />
           <Route path="/break" element={<BrainBreakPage />} />
           <Route path="/parent" element={<ParentDashboardPage />} />
           <Route path="/parent/agents" element={<AgentActivityPage />} />

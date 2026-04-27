@@ -141,10 +141,11 @@ router.post("/:id/end", async (req, res, next) => {
     const { id } = req.params;
     const { reason } = req.body ?? {};
 
-    if (!isNonEmptyString(id, 64)) {
+    const sessionId = parseUuid(id);
+    if (!sessionId) {
       return res.status(400).json({
         error: "Invalid session id.",
-        field: "id must be a non-empty string up to 64 chars.",
+        field: "id must be a valid UUID.",
       });
     }
 
@@ -155,16 +156,40 @@ router.post("/:id/end", async (req, res, next) => {
       });
     }
 
+    // Idempotent: COALESCE preserves the original ended_at when called twice.
+    // items_attempted / items_correct are recomputed from the source of truth (attempts).
+    const updateResult = await query(
+      `
+        UPDATE sessions
+        SET ended_at = COALESCE(ended_at, NOW()),
+            items_attempted = (
+              SELECT COUNT(*) FROM attempts WHERE session_id = $1
+            ),
+            items_correct = (
+              SELECT COUNT(*) FROM attempts WHERE session_id = $1 AND is_correct = TRUE
+            )
+        WHERE id = $1
+        RETURNING id, started_at, ended_at, items_attempted, items_correct
+      `,
+      [sessionId],
+    );
+
+    if (updateResult.rowCount === 0) {
+      return res.status(404).json({
+        error: "Session not found.",
+      });
+    }
+
+    const row = updateResult.rows[0];
     return res.json({
-      session_id: id.trim(),
+      session_id: row.id,
       status: "completed",
-      ended_at: new Date().toISOString(),
+      started_at: row.started_at,
+      ended_at: row.ended_at,
       reason: reason?.trim() ?? "completed_target",
       summary: {
-        attempts: 18,
-        correct: 13,
-        hints_used: 3,
-        average_response_seconds: 9.6,
+        items_attempted: Number(row.items_attempted ?? 0),
+        items_correct: Number(row.items_correct ?? 0),
       },
     });
   } catch (error) {

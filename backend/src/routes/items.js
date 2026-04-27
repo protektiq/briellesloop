@@ -1,5 +1,7 @@
 import { Router } from "express";
 import { buildSessionQueue } from "../services/queue-builder.js";
+import { ensureMathQueueItems } from "../services/content-generator.js";
+import { gradeAttempt } from "../services/grader.js";
 import {
   calculateNextReviewAt,
   calculateNextTier,
@@ -16,7 +18,6 @@ const SKILL_NAME_REGEX = /^[a-z]{2,24}$/;
 const isNonEmptyString = (value, maxLength = 120) =>
   typeof value === "string" && value.trim().length > 0 && value.trim().length <= maxLength;
 
-const isBoolean = (value) => typeof value === "boolean";
 const isUuid = (value) => typeof value === "string" && UUID_REGEX.test(value.trim());
 const isSkillName = (value) => typeof value === "string" && SKILL_NAME_REGEX.test(value.trim().toLowerCase());
 
@@ -116,7 +117,16 @@ router.get("/queue/:skill_id", async (req, res, next) => {
     }
 
     const tuning = await fetchStudentTuning(sessionContext.student_id);
-    const requestedCount = clampInteger(tuning.session_item_count, 5, 8, 6);
+    const requestedCount = clampInteger(tuning.session_item_count, 3, 10, 5);
+
+    if (sessionContext.skill_name === "math") {
+      await ensureMathQueueItems(
+        sessionContext.student_id,
+        sessionContext.skill_id,
+        requestedCount,
+      );
+    }
+
     const queue = await buildSessionQueue(sessionContext.student_id, sessionContext.skill_id, requestedCount);
 
     return res.json({
@@ -136,7 +146,6 @@ router.post("/:id/attempt", async (req, res, next) => {
     const { id } = req.params;
     const {
       answer,
-      is_correct: isCorrect,
       response_seconds: responseSeconds,
       session_id: rawSessionId,
     } = req.body ?? {};
@@ -148,12 +157,11 @@ router.post("/:id/attempt", async (req, res, next) => {
       });
     }
 
-    if (!isNonEmptyString(answer, 1_000) || !isBoolean(isCorrect)) {
+    if (!isNonEmptyString(answer, 1_000)) {
       return res.status(400).json({
         error: "Invalid attempt payload.",
         fields: {
           answer: "Required non-empty string up to 1000 chars.",
-          is_correct: "Required boolean.",
         },
       });
     }
@@ -190,7 +198,7 @@ router.post("/:id/attempt", async (req, res, next) => {
 
     const itemResult = await query(
       `
-        SELECT id
+        SELECT id, skill_id, level, item_type, prompt, answer, metadata
         FROM items
         WHERE id = $1
           AND skill_id = $2
@@ -205,6 +213,20 @@ router.post("/:id/attempt", async (req, res, next) => {
       });
     }
 
+    const itemRow = itemResult.rows[0];
+
+    let gradedResult;
+    try {
+      gradedResult = await gradeAttempt(itemRow, answer.trim(), parsedResponseSeconds);
+    } catch (gradeError) {
+      const message = gradeError instanceof Error ? gradeError.message : "Grading failed.";
+      return res.status(502).json({
+        error: "Grader unavailable.",
+        message,
+      });
+    }
+
+    const isCorrect = gradedResult.correct;
     const tuning = await fetchStudentTuning(sessionContext.student_id);
     client = await getClient();
     await client.query("BEGIN");
@@ -278,12 +300,20 @@ router.post("/:id/attempt", async (req, res, next) => {
           item_id,
           user_response,
           is_correct,
-          response_time_seconds
+          response_time_seconds,
+          ai_feedback
         )
-        VALUES ($1, $2, $3::jsonb, $4, $5)
+        VALUES ($1, $2, $3::jsonb, $4, $5, $6)
         RETURNING id, attempted_at
       `,
-      [sessionContext.id, id.trim(), JSON.stringify({ answer: answer.trim() }), isCorrect, parsedResponseSeconds],
+      [
+        sessionContext.id,
+        id.trim(),
+        JSON.stringify({ answer: answer.trim() }),
+        isCorrect,
+        parsedResponseSeconds,
+        gradedResult.feedback,
+      ],
     );
 
     const attemptedAt = attemptInsertResult.rows[0].attempted_at;
@@ -409,10 +439,27 @@ router.post("/:id/attempt", async (req, res, next) => {
       );
     }
 
+    const sessionAttemptCountResult = await client.query(
+      `
+        SELECT COUNT(*)::INT AS attempt_count
+        FROM attempts
+        WHERE session_id = $1
+      `,
+      [sessionContext.id],
+    );
+    const sessionAttemptCount = Number(sessionAttemptCountResult.rows[0]?.attempt_count ?? 0);
+    const sessionTargetCount = clampInteger(tuning.session_item_count, 3, 10, 5);
+    const sessionComplete = sessionAttemptCount >= sessionTargetCount;
+
     await client.query("COMMIT");
 
-    const nextQueue = await buildSessionQueue(sessionContext.student_id, sessionContext.skill_id, 2);
+    const nextQueue = sessionComplete
+      ? []
+      : await buildSessionQueue(sessionContext.student_id, sessionContext.skill_id, 2);
     const nextItem = nextQueue.find((item) => item.item_id !== id.trim()) ?? null;
+
+    const priorTier = Number(existingMastery.tier);
+    const tierChanged = priorTier !== nextTier;
 
     return res.status(201).json({
       attempt_id: attemptInsertResult.rows[0].id,
@@ -421,12 +468,16 @@ router.post("/:id/attempt", async (req, res, next) => {
       is_correct: isCorrect,
       response_seconds: parsedResponseSeconds,
       recorded_at: attemptedAt,
+      feedback: gradedResult.feedback,
+      explanation: gradedResult.explanation,
       mastery: {
-        prior_tier: Number(existingMastery.tier),
+        prior_tier: priorTier,
         next_tier: nextTier,
         next_review_at: nextReviewAt,
+        tier_changed: tierChanged,
+        tier_advanced: nextTier > priorTier,
       },
-      ...(nextItem ? { next_item: nextItem } : { sessionComplete: true }),
+      ...(nextItem && !sessionComplete ? { next_item: nextItem } : { sessionComplete: true }),
     });
   } catch (error) {
     if (client) {
