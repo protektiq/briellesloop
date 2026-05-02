@@ -1,6 +1,6 @@
-// Stub for the session-complete view; expand in Task 9 with full FR-6 post-session flow (mood + reflection + tier-change celebration).
 import { useEffect, useMemo, useState } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
+import MoodCheckIn from '../components/MoodCheckIn'
 
 const API_BASE_URL = 'http://localhost:3001'
 const UUID_REGEX =
@@ -42,7 +42,10 @@ const SessionCompletePage = () => {
   )
   const summary = location.state?.summary ?? null
 
+  const [mood, setMood] = useState({ emoji: null, score: null, isSet: false })
+  const [reflection, setReflection] = useState('')
   const [isEnding, setIsEnding] = useState(false)
+  const [isSaving, setIsSaving] = useState(false)
   const [endError, setEndError] = useState('')
 
   useEffect(() => {
@@ -51,24 +54,76 @@ const SessionCompletePage = () => {
     }
   }, [sessionId, navigate])
 
-  const handleBackToToday = async () => {
-    if (isEnding) {
+  useEffect(() => {
+    let isMounted = true
+
+    const finalizeSession = async () => {
+      if (!sessionId) {
+        return
+      }
+      try {
+        setIsEnding(true)
+        setEndError('')
+        const response = await fetch(
+          `${API_BASE_URL}/api/session/${encodeURIComponent(sessionId)}/end`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ reason: 'completed_target' }),
+          },
+        )
+        if (!response.ok && isMounted) {
+          const payload = await response.json().catch(() => ({}))
+          const message =
+            typeof payload?.error === 'string'
+              ? payload.error
+              : `End-session request failed with ${response.status}`
+          setEndError(message)
+        }
+      } catch (error) {
+        if (isMounted) {
+          const message = error instanceof Error ? error.message : 'Could not end the session.'
+          setEndError(message)
+        }
+      } finally {
+        if (isMounted) {
+          setIsEnding(false)
+        }
+      }
+    }
+
+    finalizeSession()
+    return () => {
+      isMounted = false
+    }
+  }, [sessionId])
+
+  const handleDoneForToday = async () => {
+    if (isSaving || isEnding) {
       return
     }
     if (!sessionId) {
       navigate('/', { replace: true })
       return
     }
+    const trimmedReflection = reflection.trim()
+    if (!mood.isSet || trimmedReflection.length === 0 || trimmedReflection.length > 2000) {
+      return
+    }
 
     try {
-      setIsEnding(true)
+      setIsSaving(true)
       setEndError('')
       const response = await fetch(
-        `${API_BASE_URL}/api/session/${encodeURIComponent(sessionId)}/end`,
+        `${API_BASE_URL}/api/session/${encodeURIComponent(sessionId)}/post-checkout`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ reason: 'completed_target' }),
+          body: JSON.stringify({
+            post_mood_emoji: mood.emoji,
+            post_mood_score: mood.score,
+            reflection: trimmedReflection,
+          }),
         },
       )
       if (!response.ok) {
@@ -76,15 +131,17 @@ const SessionCompletePage = () => {
         const message =
           typeof payload?.error === 'string'
             ? payload.error
-            : `End-session request failed with ${response.status}`
+            : `Post-checkout request failed with ${response.status}`
         setEndError(message)
+        return
       }
+      navigate('/', { replace: true })
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Could not end the session.'
+      const message =
+        error instanceof Error ? error.message : 'Could not save post-session check-out.'
       setEndError(message)
     } finally {
-      setIsEnding(false)
-      navigate('/', { replace: true })
+      setIsSaving(false)
     }
   }
 
@@ -125,16 +182,35 @@ const SessionCompletePage = () => {
           )}
         </div>
 
+        <div className="post-checkout-block">
+          <h2>How are you feeling now?</h2>
+          <MoodCheckIn onChange={setMood} />
+          <label htmlFor="reflection-input" className="reflection-label">
+            What was something hard? What was something you did well?
+          </label>
+          <textarea
+            id="reflection-input"
+            className="reflection-input"
+            value={reflection}
+            onChange={(event) => setReflection(event.target.value)}
+            maxLength={2000}
+            aria-label="Post-session reflection"
+            placeholder="Write one sentence about what felt hard and one thing you did well."
+          />
+        </div>
+
         {endError ? <span className="end-error">{endError}</span> : null}
 
         <div className="complete-actions">
           <button
             type="button"
             className="btn btn-primary"
-            onClick={handleBackToToday}
-            disabled={isEnding}
+            onClick={handleDoneForToday}
+            disabled={
+              isEnding || isSaving || !mood.isSet || reflection.trim().length === 0
+            }
           >
-            {isEnding ? 'Wrapping up…' : 'Back to Today'}
+            {isSaving ? 'Saving…' : 'Done for today'}
           </button>
         </div>
       </div>

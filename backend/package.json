@@ -10,8 +10,13 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.91.1",
+    "@fontsource/fraunces": "^5.2.9",
+    "@fontsource/nunito": "^5.2.7",
+    "@pdf-lib/fontkit": "^1.1.1",
+    "bcryptjs": "^3.0.2",
     "dotenv": "^17.4.2",
     "express": "^4.21.2",
+    "pdf-lib": "^1.17.1",
     "pg": "^8.20.0"
   },
   "devDependencies": {

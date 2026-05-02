@@ -10,12 +10,17 @@ const __dirname = path.dirname(__filename);
 
 const GRADER_PROMPT_PATH = path.resolve(__dirname, "..", "prompts", "math-grader.md");
 const HINT_PROMPT_PATH = path.resolve(__dirname, "..", "prompts", "math-hint.md");
+const READING_GRADER_PROMPT_PATH = path.resolve(__dirname, "..", "prompts", "reading-grader.md");
+const READING_HINT_PROMPT_PATH = path.resolve(__dirname, "..", "prompts", "reading-hint.md");
 
 const GRADER_PURPOSE = "math_grade";
 const HINT_PURPOSE = "math_hint";
+const READING_GRADER_PURPOSE = "reading_grade";
+const READING_HINT_PURPOSE = "reading_hint";
 
 const GRADER_MAX_TOKENS = 400;
 const HINT_MAX_TOKENS = 400;
+const READING_GRADER_MAX_TOKENS = 500;
 
 const FEEDBACK_MAX_LEN = 280;
 const EXPLANATION_MAX_LEN = 280;
@@ -24,6 +29,8 @@ const HINT_MAX_LEN = 480;
 const RESPONSE_MAX_LEN = 2_000;
 const RESPONSE_TIME_MIN = 0;
 const RESPONSE_TIME_MAX = 600;
+
+const TYPING_ACCURACY_THRESHOLD = 0.8;
 
 const promptCache = new Map();
 
@@ -262,7 +269,33 @@ const validateHintOutput = (parsed) => {
   };
 };
 
-export const gradeAttempt = async (item, studentResponse, responseSeconds) => {
+const normalizeSpelling = (value) => {
+  if (typeof value !== "string") {
+    return "";
+  }
+  return value.normalize("NFKC").trim().toLowerCase();
+};
+
+const levenshtein = (a, b) => {
+  const m = a.length;
+  const n = b.length;
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i += 1) {
+    dp[i][0] = i;
+  }
+  for (let j = 0; j <= n; j += 1) {
+    dp[0][j] = j;
+  }
+  for (let i = 1; i <= m; i += 1) {
+    for (let j = 1; j <= n; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + cost);
+    }
+  }
+  return dp[m][n];
+};
+
+const gradeMathAttempt = async (item, studentResponse, responseSeconds) => {
   const sanitizedItem = sanitizeItem(item);
   const cleanResponse = sanitizeStudentResponse(studentResponse);
   const cleanSeconds = sanitizeResponseSeconds(responseSeconds);
@@ -287,7 +320,7 @@ export const gradeAttempt = async (item, studentResponse, responseSeconds) => {
     try {
       return validateGraderOutput(cached, cleanSeconds);
     } catch {
-      // fall through and re-grade
+      // fall through
     }
   }
 
@@ -304,6 +337,156 @@ export const gradeAttempt = async (item, studentResponse, responseSeconds) => {
   });
 
   return validated;
+};
+
+const getReadingQuestion = (item, readingQuestionIndex) => {
+  const questions = Array.isArray(item.metadata?.questions) ? item.metadata.questions : [];
+  const q = questions[readingQuestionIndex];
+  if (!q || typeof q !== "object") {
+    throw new Error("Reading item missing question metadata for this index.");
+  }
+  const text = typeof q.text === "string" ? q.text : "";
+  const expected = typeof q.expected_answer === "string" ? q.expected_answer : "";
+  const type = typeof q.type === "string" ? q.type : "";
+  if (!text || !expected) {
+    throw new Error("Invalid reading question entry.");
+  }
+  const passage =
+    typeof item.metadata?.passage === "string" ? item.metadata.passage : "";
+  if (!passage) {
+    throw new Error("Reading item missing passage.");
+  }
+  return { passage, questionText: text, questionType: type, expectedAnswer: expected };
+};
+
+const gradeReadingAttempt = async (item, studentResponse, responseSeconds, readingQuestionIndex) => {
+  const idx = Number.parseInt(String(readingQuestionIndex), 10);
+  if (!Number.isInteger(idx) || idx < 0 || idx > 2) {
+    throw new Error("readingQuestionIndex must be 0, 1, or 2.");
+  }
+  const cleanResponse = sanitizeStudentResponse(studentResponse);
+  const cleanSeconds = sanitizeResponseSeconds(responseSeconds);
+  const rq = getReadingQuestion(item, idx);
+
+  const systemPrompt = await loadPrompt(READING_GRADER_PROMPT_PATH, "reading-grader.md");
+  const userMessage = JSON.stringify(
+    {
+      passage: rq.passage,
+      question_text: rq.questionText,
+      question_type: rq.questionType,
+      expected_answer: rq.expectedAnswer,
+      student_response: cleanResponse,
+      response_time_seconds: cleanSeconds,
+    },
+    null,
+    2,
+  );
+  const inputHash = hashInput(READING_GRADER_PURPOSE, systemPrompt, userMessage);
+
+  const cached = await findCachedGeneration(READING_GRADER_PURPOSE, inputHash);
+  if (cached) {
+    try {
+      return validateGraderOutput(cached, cleanSeconds);
+    } catch {
+      // fall through
+    }
+  }
+
+  const { parsed, tokensIn, tokensOut } = await callClaude(
+    systemPrompt,
+    userMessage,
+    READING_GRADER_MAX_TOKENS,
+  );
+  const validated = validateGraderOutput(parsed, cleanSeconds);
+
+  await recordGeneration({
+    purpose: READING_GRADER_PURPOSE,
+    inputPrompt: userMessage,
+    inputHash,
+    output: validated,
+    tokensIn,
+    tokensOut,
+  });
+
+  return validated;
+};
+
+const gradeSpellingLocal = (item, studentResponse, responseSeconds) => {
+  const cleanResponse = sanitizeStudentResponse(studentResponse);
+  const cleanSeconds = sanitizeResponseSeconds(responseSeconds);
+  const expectedRaw =
+    typeof item.answer?.text === "string"
+      ? item.answer.text
+      : typeof item.answer === "string"
+        ? item.answer
+        : "";
+  if (!expectedRaw) {
+    throw new Error("Spelling item missing expected word.");
+  }
+  const correct = normalizeSpelling(cleanResponse) === normalizeSpelling(expectedRaw);
+  const feedback = correct
+    ? "That matches — nice spelling."
+    : `Not quite. The word was “${expectedRaw.trim()}”.`;
+  return {
+    correct,
+    feedback: feedback.slice(0, FEEDBACK_MAX_LEN),
+    explanation: correct ? "" : "Listen again and try letter sounds one chunk at a time.",
+    response_time_seconds: cleanSeconds,
+  };
+};
+
+const gradeTypingLocal = (item, studentResponse, responseSeconds) => {
+  const cleanResponse = sanitizeStudentResponse(studentResponse);
+  const cleanSeconds = sanitizeResponseSeconds(responseSeconds);
+  const target =
+    typeof item.answer?.text === "string"
+      ? item.answer.text
+      : typeof item.prompt?.text === "string"
+        ? item.prompt.text
+        : "";
+  if (!target) {
+    throw new Error("Typing item missing target sentence.");
+  }
+  const normTarget = target.normalize("NFKC").trim();
+  const normStudent = cleanResponse.normalize("NFKC").trim();
+  const maxLen = Math.max(normStudent.length, normTarget.length, 1);
+  const dist = levenshtein(normStudent, normTarget);
+  const accuracy = 1 - dist / maxLen;
+  const correct = accuracy >= TYPING_ACCURACY_THRESHOLD;
+  const minutes = cleanSeconds > 0 ? cleanSeconds / 60 : 0;
+  const grossWpm = minutes > 0 ? cleanResponse.length / 5 / minutes : 0;
+  const roundedWpm = Math.round(grossWpm * 10) / 10;
+  const roundedAcc = Math.round(accuracy * 1000) / 1000;
+  const metrics = {
+    correct,
+    wpm: roundedWpm,
+    accuracy: roundedAcc,
+    distance: dist,
+  };
+  const feedback = correct
+    ? `Strong typing — about ${roundedWpm} WPM, ${Math.round(roundedAcc * 100)}% match.`
+    : `Keep practicing — ${Math.round(roundedAcc * 100)}% character match (goal 80%). About ${roundedWpm} WPM.`;
+  return {
+    correct,
+    feedback: feedback.slice(0, FEEDBACK_MAX_LEN),
+    explanation: JSON.stringify(metrics).slice(0, EXPLANATION_MAX_LEN),
+    response_time_seconds: cleanSeconds,
+  };
+};
+
+export const gradeAttempt = async (item, studentResponse, responseSeconds, options = {}) => {
+  const skillName = typeof options.skillName === "string" ? options.skillName.trim().toLowerCase() : "math";
+
+  if (skillName === "spelling") {
+    return gradeSpellingLocal(item, studentResponse, responseSeconds);
+  }
+  if (skillName === "typing") {
+    return gradeTypingLocal(item, studentResponse, responseSeconds);
+  }
+  if (skillName === "reading") {
+    return gradeReadingAttempt(item, studentResponse, responseSeconds, options.readingQuestionIndex);
+  }
+  return gradeMathAttempt(item, studentResponse, responseSeconds);
 };
 
 export const generateHint = async (item, responseSoFar) => {
@@ -337,6 +520,52 @@ export const generateHint = async (item, responseSoFar) => {
 
   await recordGeneration({
     purpose: HINT_PURPOSE,
+    inputPrompt: userMessage,
+    inputHash,
+    output: validated,
+    tokensIn,
+    tokensOut,
+  });
+
+  return validated;
+};
+
+export const generateReadingHint = async (item, responseSoFar, readingQuestionIndex) => {
+  const cleanSoFar = sanitizeResponseSoFar(responseSoFar);
+  const idx = Number.parseInt(String(readingQuestionIndex), 10);
+  if (!Number.isInteger(idx) || idx < 0 || idx > 2) {
+    throw new Error("reading_question_index must be 0, 1, or 2.");
+  }
+  const rq = getReadingQuestion(item, idx);
+
+  const systemPrompt = await loadPrompt(READING_HINT_PROMPT_PATH, "reading-hint.md");
+  const userMessage = JSON.stringify(
+    {
+      passage: rq.passage,
+      question_text: rq.questionText,
+      question_type: rq.questionType,
+      expected_answer: rq.expectedAnswer,
+      response_so_far: cleanSoFar,
+    },
+    null,
+    2,
+  );
+  const inputHash = hashInput(READING_HINT_PURPOSE, systemPrompt, userMessage);
+
+  const cached = await findCachedGeneration(READING_HINT_PURPOSE, inputHash);
+  if (cached) {
+    try {
+      return validateHintOutput(cached);
+    } catch {
+      // fall through
+    }
+  }
+
+  const { parsed, tokensIn, tokensOut } = await callClaude(systemPrompt, userMessage, HINT_MAX_TOKENS);
+  const validated = validateHintOutput(parsed);
+
+  await recordGeneration({
+    purpose: READING_HINT_PURPOSE,
     inputPrompt: userMessage,
     inputHash,
     output: validated,

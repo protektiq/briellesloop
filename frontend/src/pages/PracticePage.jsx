@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate, useParams } from 'react-router-dom'
+import {
+  MathSkillView,
+  ReadingSkillView,
+  SpellingSkillView,
+  TypingSkillView,
+  poolDisplayName,
+  useSpellingSpeech,
+  useTypingLiveStats,
+} from '../components/practice/PracticeSkillViews.jsx'
 
 const API_BASE_URL = 'http://localhost:3001'
 const UUID_REGEX =
@@ -54,6 +63,7 @@ const PracticePage = () => {
   const [queue, setQueue] = useState([])
   const [currentIndex, setCurrentIndex] = useState(0)
   const [answer, setAnswer] = useState('')
+  const [readingQuestionIndex, setReadingQuestionIndex] = useState(0)
   const [isLoadingQueue, setIsLoadingQueue] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [isLoadingHint, setIsLoadingHint] = useState(false)
@@ -68,6 +78,9 @@ const PracticePage = () => {
   const [attemptStats, setAttemptStats] = useState({ correct: 0, attempted: 0 })
   const [sessionStartedAtMs] = useState(() => Date.now())
   const [itemRenderedAtMs, setItemRenderedAtMs] = useState(() => Date.now())
+  const [consecutiveWrongCount, setConsecutiveWrongCount] = useState(0)
+  const [breakOfferReason, setBreakOfferReason] = useState('')
+  const slowTriggerItemIdRef = useRef('')
   const inputRef = useRef(null)
 
   const totalCount = queue.length
@@ -84,6 +97,56 @@ const PracticePage = () => {
       (step) => step && typeof step === 'object' && typeof step.label === 'string',
     )
   }, [currentItem])
+
+  const readingPassage = useMemo(() => {
+    const p = currentItem?.metadata?.passage
+    return typeof p === 'string' ? p : ''
+  }, [currentItem])
+
+  const readingTitle = useMemo(() => {
+    const t = currentItem?.metadata?.title
+    return typeof t === 'string' ? t : ''
+  }, [currentItem])
+
+  const readingQuestions = useMemo(() => {
+    const q = currentItem?.metadata?.questions
+    return Array.isArray(q) ? q : []
+  }, [currentItem])
+
+  const currentReadingQuestionText = useMemo(() => {
+    const rq = readingQuestions[readingQuestionIndex]
+    if (rq && typeof rq.text === 'string') {
+      return rq.text
+    }
+    return ''
+  }, [readingQuestions, readingQuestionIndex])
+
+  const spellingWord = useMemo(() => {
+    const meta = currentItem?.metadata
+    if (meta && typeof meta.word === 'string') {
+      return meta.word
+    }
+    return typeof currentItem?.answer?.text === 'string' ? currentItem.answer.text : ''
+  }, [currentItem])
+
+  const spellingPoolLabel = useMemo(() => {
+    const p = currentItem?.metadata?.pool
+    return typeof p === 'string' ? poolDisplayName(p) : ''
+  }, [currentItem])
+
+  useSpellingSpeech(spellingWord, currentItem?.item_id)
+
+  const { liveWpm, liveAccuracy } = useTypingLiveStats(answer, promptText, itemRenderedAtMs)
+
+  const speakSpellingWord = useCallback(() => {
+    if (typeof window === 'undefined' || !window.speechSynthesis || !spellingWord) {
+      return
+    }
+    window.speechSynthesis.cancel()
+    const utter = new SpeechSynthesisUtterance(spellingWord)
+    utter.rate = 0.92
+    window.speechSynthesis.speak(utter)
+  }, [spellingWord])
 
   useEffect(() => {
     let isMounted = true
@@ -137,11 +200,44 @@ const PracticePage = () => {
       return
     }
     setAnswer('')
+    setReadingQuestionIndex(0)
     setItemRenderedAtMs(Date.now())
+    slowTriggerItemIdRef.current = ''
     if (inputRef.current) {
       inputRef.current.focus()
     }
   }, [currentItem?.item_id])
+
+  useEffect(() => {
+    if (safeSkillName !== 'reading') {
+      return
+    }
+    setAnswer('')
+    setItemRenderedAtMs(Date.now())
+    slowTriggerItemIdRef.current = ''
+  }, [readingQuestionIndex, safeSkillName])
+
+  useEffect(() => {
+    if (!currentItem || breakOfferReason) {
+      return
+    }
+
+    const timer = window.setTimeout(() => {
+      const rqKey =
+        safeSkillName === 'reading'
+          ? `${currentItem.item_id}-${readingQuestionIndex}`
+          : currentItem.item_id
+      if (slowTriggerItemIdRef.current === rqKey) {
+        return
+      }
+      slowTriggerItemIdRef.current = rqKey
+      setBreakOfferReason('auto_slow')
+    }, 60_000)
+
+    return () => {
+      window.clearTimeout(timer)
+    }
+  }, [breakOfferReason, currentItem?.item_id, readingQuestionIndex, safeSkillName])
 
   const computeResponseSeconds = useCallback(() => {
     const elapsed = Math.round((Date.now() - itemRenderedAtMs) / 1000)
@@ -184,6 +280,15 @@ const PracticePage = () => {
 
     const elapsedSeconds = computeResponseSeconds()
 
+    const body = {
+      session_id: sessionId,
+      answer: trimmed,
+      response_seconds: elapsedSeconds,
+    }
+    if (safeSkillName === 'reading') {
+      body.reading_question_index = readingQuestionIndex
+    }
+
     try {
       setIsSubmitting(true)
       setErrorMessage('')
@@ -192,11 +297,7 @@ const PracticePage = () => {
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            session_id: sessionId,
-            answer: trimmed,
-            response_seconds: elapsedSeconds,
-          }),
+          body: JSON.stringify(body),
         },
       )
 
@@ -222,6 +323,8 @@ const PracticePage = () => {
       const nextAttempted = attemptStats.attempted + 1
       const nextCorrect = attemptStats.correct + (wasCorrect ? 1 : 0)
       setAttemptStats({ attempted: nextAttempted, correct: nextCorrect })
+      const nextWrongCount = wasCorrect ? 0 : consecutiveWrongCount + 1
+      setConsecutiveWrongCount(nextWrongCount)
 
       const masteryInfo = payload.mastery ?? null
       if (masteryInfo?.tier_advanced) {
@@ -251,15 +354,36 @@ const PracticePage = () => {
         body: explanationText,
       })
 
-      const isComplete =
-        Boolean(payload.sessionComplete) || !payload.next_item || currentIndex + 1 >= totalCount
-
-      if (isComplete) {
+      if (Boolean(payload.sessionComplete)) {
         navigateToComplete({ attempted: nextAttempted, correct: nextCorrect })
         return
       }
 
+      const queueExhausted =
+        safeSkillName !== 'reading' &&
+        (!payload.next_item || currentIndex + 1 >= totalCount)
+
+      if (queueExhausted) {
+        navigateToComplete({ attempted: nextAttempted, correct: nextCorrect })
+        return
+      }
+
+      const stayOnPassage =
+        safeSkillName === 'reading' && readingQuestionIndex < 2 && totalCount > 0
+
+      if (stayOnPassage) {
+        setReadingQuestionIndex((index) => index + 1)
+        if (!wasCorrect && nextWrongCount >= 2) {
+          setBreakOfferReason('auto_two_wrong')
+        }
+        return
+      }
+
+      setReadingQuestionIndex(0)
       setCurrentIndex((index) => index + 1)
+      if (!wasCorrect && nextWrongCount >= 2) {
+        setBreakOfferReason('auto_two_wrong')
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Could not submit attempt.'
       setCoachState({
@@ -273,21 +397,27 @@ const PracticePage = () => {
     }
   }
 
+  const hintEligible = safeSkillName === 'math' || safeSkillName === 'reading'
+
   const handleHint = async () => {
-    if (!currentItem || isBusy) {
+    if (!currentItem || isBusy || !hintEligible) {
       return
     }
 
     try {
       setIsLoadingHint(true)
       setErrorMessage('')
+      const hintBody = {
+        item_id: currentItem.item_id,
+        response_so_far: answer,
+      }
+      if (safeSkillName === 'reading') {
+        hintBody.reading_question_index = readingQuestionIndex
+      }
       const response = await fetch(`${API_BASE_URL}/api/ai/hint`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          item_id: currentItem.item_id,
-          response_so_far: answer,
-        }),
+        body: JSON.stringify(hintBody),
       })
 
       const payload = await response.json().catch(() => ({}))
@@ -338,68 +468,143 @@ const PracticePage = () => {
     }
   }
 
-  const progressPercent = totalCount === 0
-    ? 0
-    : Math.round(((currentIndex + (currentItem ? 0 : 1)) / totalCount) * 100)
-
-  const renderStepBoxes = () => {
-    if (!currentItem) {
-      return null
+  const handleTakeBrainBreak = () => {
+    if (!sessionId) {
+      return
     }
-
-    if (structuredSteps.length === 0) {
-      return (
-        <div className="step-row">
-          <div className={`step-box${isBusy ? ' loading' : ' active'}`}>
-            <div className="step-label">Step — What we&apos;re finding</div>
-            <div className="step-content placeholder">
-              {isBusy ? 'thinking…' : 'Type your answer below 👇'}
-            </div>
-          </div>
-        </div>
-      )
-    }
-
-    const lastIndex = structuredSteps.length - 1
-    return (
-      <div className="step-row">
-        {structuredSteps.map((step, index) => {
-          const isLast = index === lastIndex
-          let className = 'step-box'
-          if (isLast) {
-            className += isBusy ? ' loading' : ' active'
-          } else {
-            className += ' done'
-          }
-          return (
-            <div key={`${step.label}-${index}`} className={className}>
-              <div className="step-label">
-                {!isLast ? <span className="check" aria-hidden="true">✓</span> : null}
-                <span>{step.label}</span>
-              </div>
-              <div className={`step-content${isLast && isBusy ? ' thinking' : ''}`}>
-                {isLast && isBusy ? 'thinking…' : step.content}
-              </div>
-            </div>
-          )
-        })}
-      </div>
-    )
+    navigate('/break', {
+      state: {
+        sessionId,
+        skillName: safeSkillName,
+        returnTo: `/practice/${safeSkillName}`,
+        triggeredBy: breakOfferReason || 'user_button',
+        durationSeconds: 180,
+      },
+    })
   }
 
+  const handleSkipBrainBreak = () => {
+    setBreakOfferReason('')
+  }
+
+  const progressPercent = useMemo(() => {
+    if (totalCount === 0) {
+      return 0
+    }
+    if (safeSkillName === 'reading') {
+      const step = currentIndex * 3 + readingQuestionIndex + 1
+      const totalSteps = totalCount * 3
+      return Math.round((step / totalSteps) * 100)
+    }
+    return Math.round(((currentIndex + (currentItem ? 0 : 1)) / totalCount) * 100)
+  }, [
+    currentIndex,
+    currentItem,
+    readingQuestionIndex,
+    safeSkillName,
+    totalCount,
+  ])
+
+  const progressPillText = useMemo(() => {
+    if (totalCount === 0) {
+      return 'Loading…'
+    }
+    if (safeSkillName === 'reading') {
+      return `Passage ${Math.min(currentIndex + 1, totalCount)} of ${totalCount} · Question ${readingQuestionIndex + 1} of 3 · No timer`
+    }
+    return `Question ${Math.min(currentIndex + 1, totalCount)} of ${totalCount} · No timer`
+  }, [currentIndex, readingQuestionIndex, safeSkillName, totalCount])
+
   const renderSessionDots = () => {
+    const dotCount =
+      safeSkillName === 'reading' ? Math.max(totalCount * 3, 1) : Math.max(totalCount, 1)
+    const activeStep =
+      safeSkillName === 'reading' ? currentIndex * 3 + readingQuestionIndex : currentIndex
     const dots = []
-    const dotCount = Math.max(totalCount, 1)
     for (let index = 0; index < dotCount; index += 1) {
       let className = 'session-dot'
-      if (index < currentIndex) {
+      if (index < activeStep) {
         className += ' done'
-      } else if (index === currentIndex && currentItem) {
+      } else if (index === activeStep && currentItem) {
         className += ' current'
       }
       dots.push(<div key={`dot-${index}`} className={className} />)
     }
     return dots
+  }
+
+  const inputDisabled = !currentItem || isBusy
+
+  const renderSkillBody = () => {
+    if (!currentItem || isLoadingQueue) {
+      return (
+        <div className="activity-question">Picking the first question for you…</div>
+      )
+    }
+
+    if (safeSkillName === 'math') {
+      return (
+        <MathSkillView
+          currentItem={currentItem}
+          structuredSteps={structuredSteps}
+          promptText={promptText}
+          isBusy={isBusy}
+          answer={answer}
+          onAnswerChange={setAnswer}
+          onKeyDown={handleKeyDown}
+          inputRef={inputRef}
+          inputDisabled={inputDisabled}
+        />
+      )
+    }
+
+    if (safeSkillName === 'reading') {
+      return (
+        <ReadingSkillView
+          passage={readingPassage}
+          questionText={currentReadingQuestionText}
+          readingQuestionIndex={readingQuestionIndex}
+          passageTitle={readingTitle}
+          answer={answer}
+          onAnswerChange={setAnswer}
+          onKeyDown={handleKeyDown}
+          inputRef={inputRef}
+          inputDisabled={inputDisabled}
+        />
+      )
+    }
+
+    if (safeSkillName === 'spelling') {
+      return (
+        <SpellingSkillView
+          poolLabel={spellingPoolLabel}
+          answer={answer}
+          onAnswerChange={setAnswer}
+          onKeyDown={handleKeyDown}
+          inputRef={inputRef}
+          inputDisabled={inputDisabled}
+        />
+      )
+    }
+
+    if (safeSkillName === 'typing') {
+      return (
+        <TypingSkillView
+          targetSentence={promptText}
+          liveWpm={liveWpm}
+          liveAccuracy={liveAccuracy}
+          answer={answer}
+          onAnswerChange={setAnswer}
+          onKeyDown={handleKeyDown}
+          inputRef={inputRef}
+          inputDisabled={inputDisabled}
+        />
+      )
+    }
+
+    return (
+      <div className="activity-question">{promptText || 'Ready when you are.'}</div>
+    )
   }
 
   if (errorMessage && queue.length === 0 && !isLoadingQueue) {
@@ -438,46 +643,27 @@ const PracticePage = () => {
         <div className="activity-main">
           <div className="activity-header">
             <span className="activity-tag">{skillDisplayLabel(safeSkillName)}</span>
-            <span className="progress-pill">
-              {totalCount === 0
-                ? 'Loading…'
-                : `Question ${Math.min(currentIndex + 1, totalCount)} of ${totalCount} · No timer`}
-            </span>
+            <span className="progress-pill">{progressPillText}</span>
           </div>
 
           <div className="progress-bar">
             <div style={{ width: `${progressPercent}%` }} />
           </div>
 
-          <div className="activity-question">
-            {isLoadingQueue
-              ? 'Picking the first question for you…'
-              : promptText || 'Ready when you are.'}
-          </div>
-
-          {renderStepBoxes()}
-
-          <input
-            ref={inputRef}
-            type="text"
-            className="input-line"
-            value={answer}
-            onChange={(event) => setAnswer(event.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="Type your answer here"
-            aria-label="Your answer"
-            disabled={!currentItem || isBusy}
-            autoFocus
-          />
+          {renderSkillBody()}
 
           <div className="btn-row">
             <button
               type="button"
               className="btn btn-secondary"
-              onClick={handleHint}
-              disabled={!currentItem || isBusy}
+              onClick={safeSkillName === 'spelling' ? speakSpellingWord : handleHint}
+              disabled={!currentItem || isBusy || (safeSkillName === 'spelling' ? false : !hintEligible)}
             >
-              {isLoadingHint ? 'Thinking…' : 'Hint'}
+              {safeSkillName === 'spelling'
+                ? 'Hear again'
+                : isLoadingHint
+                  ? 'Thinking…'
+                  : 'Hint'}
             </button>
             <button
               type="button"
@@ -494,10 +680,12 @@ const PracticePage = () => {
             <button
               type="button"
               className="stuck-btn"
-              onClick={handleHint}
-              disabled={!currentItem || isBusy}
+              onClick={hintEligible ? handleHint : speakSpellingWord}
+              disabled={!currentItem || isBusy || (hintEligible ? false : !spellingWord)}
             >
-              I&apos;m stuck — break it smaller
+              {hintEligible
+                ? 'I&apos;m stuck — break it smaller'
+                : 'Replay word'}
             </button>
           </div>
         </div>
@@ -520,6 +708,13 @@ const PracticePage = () => {
               <div className="breath-orb" aria-hidden="true" />
               <span className="breath-mini-label">breathe</span>
             </div>
+            <button
+              type="button"
+              className="btn btn-secondary brain-break-card-btn"
+              onClick={() => setBreakOfferReason('user_button')}
+            >
+              Take a brain break
+            </button>
           </div>
 
           <div className="session-progress">
@@ -528,6 +723,33 @@ const PracticePage = () => {
           </div>
         </aside>
       </div>
+      {breakOfferReason ? (
+        <div className="modal-backdrop" role="presentation">
+          <div
+            className="break-offer-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Take a quick brain break"
+          >
+            <h3>Want a quick brain break?</h3>
+            <p>
+              {breakOfferReason === 'auto_two_wrong'
+                ? 'Two tough questions in a row can happen. A 3-minute breathing break may help.'
+                : breakOfferReason === 'auto_slow'
+                  ? "You've been on this one for over a minute. Want a short reset?"
+                  : 'If your brain feels tired, we can pause for a quick breathing break.'}
+            </p>
+            <div className="break-offer-actions">
+              <button type="button" className="btn btn-primary" onClick={handleTakeBrainBreak}>
+                Take a break
+              </button>
+              <button type="button" className="btn btn-secondary" onClick={handleSkipBrainBreak}>
+                Keep going
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </section>
   )
 }

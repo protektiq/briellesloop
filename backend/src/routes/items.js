@@ -1,6 +1,11 @@
 import { Router } from "express";
 import { buildSessionQueue } from "../services/queue-builder.js";
 import { ensureMathQueueItems } from "../services/content-generator.js";
+import {
+  ensureReadingQueueItems,
+  ensureSpellingQueueItems,
+  ensureTypingQueueItems,
+} from "../services/skills-queue.js";
 import { gradeAttempt } from "../services/grader.js";
 import {
   calculateNextReviewAt,
@@ -126,6 +131,27 @@ router.get("/queue/:skill_id", async (req, res, next) => {
         requestedCount,
       );
     }
+    if (sessionContext.skill_name === "reading") {
+      await ensureReadingQueueItems(
+        sessionContext.student_id,
+        sessionContext.skill_id,
+        requestedCount,
+      );
+    }
+    if (sessionContext.skill_name === "typing") {
+      await ensureTypingQueueItems(
+        sessionContext.student_id,
+        sessionContext.skill_id,
+        requestedCount,
+      );
+    }
+    if (sessionContext.skill_name === "spelling") {
+      await ensureSpellingQueueItems(
+        sessionContext.student_id,
+        sessionContext.skill_id,
+        requestedCount,
+      );
+    }
 
     const queue = await buildSessionQueue(sessionContext.student_id, sessionContext.skill_id, requestedCount);
 
@@ -148,6 +174,7 @@ router.post("/:id/attempt", async (req, res, next) => {
       answer,
       response_seconds: responseSeconds,
       session_id: rawSessionId,
+      reading_question_index: rawReadingQuestionIndex,
     } = req.body ?? {};
 
     if (!isUuid(id)) {
@@ -198,10 +225,20 @@ router.post("/:id/attempt", async (req, res, next) => {
 
     const itemResult = await query(
       `
-        SELECT id, skill_id, level, item_type, prompt, answer, metadata
-        FROM items
-        WHERE id = $1
-          AND skill_id = $2
+        SELECT
+          i.id,
+          i.skill_id,
+          i.level,
+          i.item_type,
+          i.prompt,
+          i.answer,
+          i.metadata,
+          sk.name AS skill_name
+        FROM items i
+        INNER JOIN skills sk
+          ON sk.id = i.skill_id
+        WHERE i.id = $1
+          AND i.skill_id = $2
         LIMIT 1
       `,
       [id.trim(), sessionContext.skill_id],
@@ -215,9 +252,33 @@ router.post("/:id/attempt", async (req, res, next) => {
 
     const itemRow = itemResult.rows[0];
 
+    let readingQuestionIndexParsed = null;
+    if (rawReadingQuestionIndex !== undefined && rawReadingQuestionIndex !== null) {
+      const parsedIdx = Number.parseInt(String(rawReadingQuestionIndex), 10);
+      if (!Number.isInteger(parsedIdx) || parsedIdx < 0 || parsedIdx > 2) {
+        return res.status(400).json({
+          error: "Invalid reading_question_index.",
+          field: "reading_question_index must be an integer between 0 and 2.",
+        });
+      }
+      readingQuestionIndexParsed = parsedIdx;
+    }
+
+    if (itemRow.item_type === "reading_passage") {
+      if (readingQuestionIndexParsed === null) {
+        return res.status(400).json({
+          error: "Missing reading_question_index.",
+          field: "reading_question_index is required for reading passages.",
+        });
+      }
+    }
+
     let gradedResult;
     try {
-      gradedResult = await gradeAttempt(itemRow, answer.trim(), parsedResponseSeconds);
+      gradedResult = await gradeAttempt(itemRow, answer.trim(), parsedResponseSeconds, {
+        skillName: itemRow.skill_name ?? sessionContext.skill_name,
+        readingQuestionIndex: readingQuestionIndexParsed,
+      });
     } catch (gradeError) {
       const message = gradeError instanceof Error ? gradeError.message : "Grading failed.";
       return res.status(502).json({
@@ -309,7 +370,11 @@ router.post("/:id/attempt", async (req, res, next) => {
       [
         sessionContext.id,
         id.trim(),
-        JSON.stringify({ answer: answer.trim() }),
+        JSON.stringify(
+          itemRow.item_type === "reading_passage" && readingQuestionIndexParsed !== null
+            ? { answer: answer.trim(), reading_question_index: readingQuestionIndexParsed }
+            : { answer: answer.trim() },
+        ),
         isCorrect,
         parsedResponseSeconds,
         gradedResult.feedback,
@@ -449,7 +514,10 @@ router.post("/:id/attempt", async (req, res, next) => {
     );
     const sessionAttemptCount = Number(sessionAttemptCountResult.rows[0]?.attempt_count ?? 0);
     const sessionTargetCount = clampInteger(tuning.session_item_count, 3, 10, 5);
-    const sessionComplete = sessionAttemptCount >= sessionTargetCount;
+    // Reading uses three attempts per queued passage (one per comprehension question).
+    const effectiveSessionTarget =
+      sessionContext.skill_name === "reading" ? sessionTargetCount * 3 : sessionTargetCount;
+    const sessionComplete = sessionAttemptCount >= effectiveSessionTarget;
 
     await client.query("COMMIT");
 

@@ -1,11 +1,11 @@
 import { Router } from "express";
 import { query } from "../db.js";
 import { getSuggestedSkill } from "../services/skill-suggester.js";
+import { resolveStudentId } from "../services/student-resolve.js";
+import { getDashboardWeekPayload } from "../services/dashboard-week.js";
 
 const router = Router();
 
-const UUID_REGEX =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SKILL_NAME_REGEX = /^[a-z]{2,24}$/;
 
 const normalizeSkillName = (value) => {
@@ -21,60 +21,27 @@ const normalizeSkillName = (value) => {
   return trimmed;
 };
 
-const parseUuidFromInput = (value) => {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  if (!UUID_REGEX.test(trimmed)) {
-    return null;
-  }
-
-  return trimmed;
-};
-
-const resolveStudentId = async (studentIdFromQuery) => {
-  const validatedStudentId = parseUuidFromInput(studentIdFromQuery);
-  if (validatedStudentId) {
-    return validatedStudentId;
-  }
-
-  const studentResult = await query(
-    `
-      SELECT id
-      FROM students
-      ORDER BY created_at ASC
-      LIMIT 1
-    `,
-  );
-
-  return studentResult.rows[0]?.id ?? null;
-};
-
-router.get("/week", async (_req, res, next) => {
+router.get("/week", async (req, res, next) => {
   try {
-    return res.json({
-      week_start: "2026-04-20",
-      week_end: "2026-04-26",
-      totals: {
-        sessions: 6,
-        minutes: 128,
-        attempts: 134,
-        accuracy: 0.79,
-      },
-      trend: [
-        { day: "Mon", minutes: 18, accuracy: 0.75 },
-        { day: "Tue", minutes: 22, accuracy: 0.8 },
-        { day: "Wed", minutes: 15, accuracy: 0.73 },
-        { day: "Thu", minutes: 24, accuracy: 0.81 },
-        { day: "Fri", minutes: 19, accuracy: 0.78 },
-        { day: "Sat", minutes: 14, accuracy: 0.82 },
-        { day: "Sun", minutes: 16, accuracy: 0.84 },
-      ],
-      generated_at: new Date().toISOString(),
-    });
+    const studentId = await resolveStudentId(
+      typeof req.query.student_id === "string" ? req.query.student_id : undefined,
+    );
+    if (!studentId) {
+      return res.status(404).json({ error: "No student found." });
+    }
+
+    const weekStartRaw =
+      typeof req.query.week_start === "string" ? req.query.week_start.trim() : "";
+
+    const payload = await getDashboardWeekPayload(studentId, weekStartRaw);
+    return res.json(payload);
   } catch (error) {
+    if (error && error.code === "INVALID_WEEK_START") {
+      return res.status(400).json({
+        error: "InvalidWeekStart",
+        message: error.message ?? "Invalid week_start.",
+      });
+    }
     return next(error);
   }
 });

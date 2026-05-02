@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { generateHint } from "../services/grader.js";
+import { generateHint, generateReadingHint } from "../services/grader.js";
 import { query } from "../db.js";
 
 const router = Router();
@@ -72,7 +72,11 @@ router.post("/grade", async (req, res, next) => {
 
 router.post("/hint", async (req, res, next) => {
   try {
-    const { item_id: itemId, response_so_far: rawResponseSoFar } = req.body ?? {};
+    const {
+      item_id: itemId,
+      response_so_far: rawResponseSoFar,
+      reading_question_index: rawReadingQuestionIndex,
+    } = req.body ?? {};
 
     if (!isUuid(itemId)) {
       return res.status(400).json({
@@ -110,15 +114,37 @@ router.post("/hint", async (req, res, next) => {
     }
 
     const itemRow = itemResult.rows[0];
-    if (itemRow.skill_name !== "math") {
+    if (itemRow.skill_name !== "math" && itemRow.skill_name !== "reading") {
       return res.status(400).json({
-        error: "Hint endpoint only supports math items in this milestone.",
+        error: "Hints are available for math and reading items only.",
       });
+    }
+
+    let readingQuestionIndex = 0;
+    if (itemRow.skill_name === "reading") {
+      if (rawReadingQuestionIndex === undefined || rawReadingQuestionIndex === null) {
+        return res.status(400).json({
+          error: "Missing reading_question_index.",
+          field: "reading_question_index is required for reading items.",
+        });
+      }
+      const parsedIdx = Number.parseInt(String(rawReadingQuestionIndex), 10);
+      if (!Number.isInteger(parsedIdx) || parsedIdx < 0 || parsedIdx > 2) {
+        return res.status(400).json({
+          error: "Invalid reading_question_index.",
+          field: "reading_question_index must be an integer between 0 and 2.",
+        });
+      }
+      readingQuestionIndex = parsedIdx;
     }
 
     let hint;
     try {
-      hint = await generateHint(itemRow, responseSoFar);
+      if (itemRow.skill_name === "reading") {
+        hint = await generateReadingHint(itemRow, responseSoFar, readingQuestionIndex);
+      } else {
+        hint = await generateHint(itemRow, responseSoFar);
+      }
     } catch (hintError) {
       const message = hintError instanceof Error ? hintError.message : "Hint generation failed.";
       return res.status(502).json({

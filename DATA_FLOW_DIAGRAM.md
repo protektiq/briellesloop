@@ -9,8 +9,13 @@ flowchart TD
   backendApi --> dashboardApi[/api/dashboard/*]
   backendApi --> agentsApi[/api/agents/*]
   backendApi --> exportApi[/api/export/iep-pdf]
+  backendApi --> settingsApi[/api/settings/*]
+  backendApi --> parentApi[/api/parent/*]
 
   parentDashboard[ParentDashboard] --> studentsTbl[students]
+  parentDashboard --> parentSettingsTbl[parent_settings]
+  settingsApi --> parentSettingsTbl
+  parentApi --> parentSettingsTbl
   parentDashboard --> sessionsTbl[sessions]
   sessionsTbl --> attemptsTbl[attempts]
   sessionsTbl --> brainBreaksTbl[brain_breaks]
@@ -33,6 +38,11 @@ flowchart TD
   itemsApi --> itemsTbl
   itemsApi --> attemptsTbl
   dashboardApi --> weeklyInsightsTbl
+  dashboardApi --> sessionsTbl
+  dashboardApi --> brainBreaksTbl
+  exportApi --> sessionsTbl
+  exportApi --> weeklyInsightsTbl
+  exportApi --> itemMasteryTbl
   agentsApi --> agentsTbl
   agentsApi --> agentRunsTbl
   agentsApi --> agentActionsTbl
@@ -44,6 +54,9 @@ flowchart TD
 - Agent flow: `agents` create `agent_runs`, write `agent_actions`, and adjust `student_tuning` that influences future sessions.
 - Weekly summaries are persisted in `weekly_insights` for parent review and IEP reporting.
 - API layer now includes SRS-driven queue building and mastery updates in `/api/items/*`.
+- **Parent PIN:** `parent_settings.parent_pin_hash` (bcrypt). `GET /api/settings/parent-pin`, `POST /api/settings/parent-pin`. Unlock: `POST /api/parent/verify-pin`. Frontend keeps an unlocked flag in `sessionStorage` for `/parent/*`.
+- **Parent dashboard data:** `GET /api/dashboard/week` aggregates `sessions`, `brain_breaks`, `skills`, `weekly_insights` (UTC Monday week windows).
+- **IEP PDF:** `GET /api/export/iep-pdf` builds an A4 `pdf-lib` report (12-week tables + snapshots).
 
 ## Frontend Route Shell (Design System Foundation)
 
@@ -57,8 +70,9 @@ flowchart TD
   routeOutlet --> todayPage[TodayPage]
   routeOutlet --> practicePage[PracticePage]
   routeOutlet --> breakPage[BrainBreakPage]
-  routeOutlet --> parentPage[ParentDashboardPage]
-  routeOutlet --> agentPage[AgentActivityPage]
+  routeOutlet --> parentGate[ParentGateLayout]
+  parentGate --> parentPage[ParentDashboardPage]
+  parentGate --> agentPage[AgentActivityPage]
   routeOutlet --> settingsPage[SettingsPage]
   cssTokens[tokensCss] --> topNav
   cssTypography[typographyCss] --> topNav
@@ -147,4 +161,84 @@ flowchart TD
   practicePage --> completeRoute[/practice/math/complete]
   completeRoute --> sessionEndApi[POST /api/session/:id/end]
   sessionEndApi --> sessionsEndedAt[sessions ended_at + items_attempted/correct]
+```
+
+## Reading, Spelling, and Typing (Task 10)
+
+```mermaid
+flowchart TD
+  practicePage[PracticePage dispatch] --> skillViews[MathReadingSpellingTyping views]
+
+  queueRead[GET queue reading] --> ensureRead[ensureReadingQueueItems]
+  ensureRead --> genRead[skills-queue.generateReadingItem]
+  genRead --> claudeRead[Claude]
+  genRead --> itemsRead[items reading_passage]
+
+  queueSpell[GET queue spelling] --> ensureSpell[ensureSpellingQueueItems]
+  ensureSpell --> spellBank[items spelling_word seeded bank]
+
+  queueType[GET queue typing] --> ensureType[ensureTypingQueueItems]
+  ensureType --> genType[skills-queue.generateTypingItem]
+  genType --> claudeType[Claude]
+  genType --> itemsType[items typing_sentence]
+
+  attemptRead[POST attempt reading] --> gradeRead[grader Claude reading_grade]
+  attemptRead --> attemptsTbl
+  attemptRead --> sessionTargetRead["sessionComplete when attempts >= session_item_count * 3"]
+
+  attemptSpell[POST attempt spelling] --> gradeSpell[grader local string match]
+  attemptType[POST attempt typing] --> gradeType[grader local accuracy + WPM]
+
+  hintRead[POST /api/ai/hint reading] --> hintReadSvc[generateReadingHint Claude]
+  hintSpell[spelling TTS] --> speechSynth[browser SpeechSynthesis]
+```
+
+- **Practice UI**: [`PracticePage.jsx`](frontend/src/pages/PracticePage.jsx) delegates rendering to [`PracticeSkillViews.jsx`](frontend/src/components/practice/PracticeSkillViews.jsx) per skill; spelling uses SpeechSynthesis; typing shows live WPM/accuracy vs target.
+- **Reading**: Each queued row is one passage with three comprehension questions; the client sends `reading_question_index` (0–2) per attempt; session completion counts attempts at **3×** `session_item_count` so five passages still equal fifteen graded interactions.
+
+## CBT Break + Post-Session Checkout Flow
+
+```mermaid
+flowchart TD
+  todayPage[TodayPage] --> moodCheck[MoodCheckIn pre_mood]
+  moodCheck --> lowMoodGate{score_lte_3_or_sad_worried}
+  lowMoodGate -->|yes| breakRouteLow[/break triggered_by low_mood]
+  lowMoodGate -->|no| practicePage[PracticePage]
+
+  practicePage --> frustrationGate{two_wrong_or_over_60s_or_user_button}
+  frustrationGate -->|offer_accept| breakRouteInSession[/break triggered_by auto_or_user]
+  frustrationGate -->|decline| practicePage
+
+  breakRouteLow --> breakLogApi[POST /api/session/:id/brain-break]
+  breakRouteInSession --> breakLogApi
+  breakLogApi --> brainBreaksTbl[brain_breaks]
+
+  practicePage --> completePage[SessionCompletePage]
+  completePage --> endApi[POST /api/session/:id/end]
+  endApi --> sessionsTbl[sessions ended_at]
+  completePage --> postCheckoutApi[POST /api/session/:id/post-checkout]
+  postCheckoutApi --> sessionsMood[sessions post_mood_emoji post_mood_score reflection]
+```
+
+## Parent dashboard + PIN + IEP export
+
+```mermaid
+flowchart TD
+  parentGate[ParentGateLayout] --> pinCheck{GET /api/settings/parent-pin}
+  pinCheck -->|configured and not unlocked| pinScreen[PIN entry POST /api/parent/verify-pin]
+  pinScreen --> sessionStorageFlag[sessionStorage briellesloop_parent_unlocked_v1]
+  pinCheck -->|not configured or unlocked| parentDash[ParentDashboardPage]
+  sessionStorageFlag --> parentDash
+
+  parentDash --> weekApi[GET /api/dashboard/week]
+  weekApi --> sessionsTbl[sessions]
+  weekApi --> brainBreaksTbl[brain_breaks]
+  weekApi --> skillsTbl[skills]
+  weekApi --> weeklyInsightsTbl[weekly_insights]
+
+  parentDash --> pdfApi[GET /api/export/iep-pdf]
+  pdfApi --> itemMasteryTbl[item_mastery]
+
+  settingsPage[SettingsPage] --> savePin[POST /api/settings/parent-pin]
+  savePin --> parentSettingsTbl[parent_settings]
 ```

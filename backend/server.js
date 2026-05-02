@@ -15,6 +15,8 @@ import aiRouter from "./src/routes/ai.js";
 import dashboardRouter from "./src/routes/dashboard.js";
 import agentsRouter from "./src/routes/agents.js";
 import exportRouter from "./src/routes/export.js";
+import settingsRouter from "./src/routes/settings.js";
+import parentRouter from "./src/routes/parent.js";
 
 const app = express();
 const rawPort = process.env.PORT ?? "3001";
@@ -51,6 +53,8 @@ app.use("/api/ai", aiRouter);
 app.use("/api/dashboard", dashboardRouter);
 app.use("/api/agents", agentsRouter);
 app.use("/api/export", exportRouter);
+app.use("/api/settings", settingsRouter);
+app.use("/api/parent", parentRouter);
 
 app.use((error, _req, res, _next) => {
   const message = error instanceof Error ? error.message : "Unexpected server error";

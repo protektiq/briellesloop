@@ -182,9 +182,12 @@ const TodayPage = () => {
       if (moodIsLow) {
         navigate('/break', {
           state: {
-            continueToPractice: true,
+            continueToPractice: false,
             skillName: selectedSkill.name,
+            returnTo: `/practice/${selectedSkill.name}`,
             sessionId: payload.session_id,
+            triggeredBy: 'low_mood',
+            durationSeconds: 180,
           },
         })
         return

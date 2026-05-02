@@ -1,5 +1,6 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import Layout from './components/Layout'
+import ParentGateLayout from './components/ParentGateLayout'
 import AgentActivityPage from './pages/AgentActivityPage'
 import BrainBreakPage from './pages/BrainBreakPage'
 import ParentDashboardPage from './pages/ParentDashboardPage'
@@ -20,8 +21,10 @@ const App = () => {
             element={<SessionCompletePage />}
           />
           <Route path="/break" element={<BrainBreakPage />} />
-          <Route path="/parent" element={<ParentDashboardPage />} />
-          <Route path="/parent/agents" element={<AgentActivityPage />} />
+          <Route path="/parent" element={<ParentGateLayout />}>
+            <Route index element={<ParentDashboardPage />} />
+            <Route path="agents" element={<AgentActivityPage />} />
+          </Route>
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
