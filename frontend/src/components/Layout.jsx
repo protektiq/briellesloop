@@ -3,7 +3,7 @@ import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useOnboardingGate } from '../hooks/useBodyFontPreference'
 import TopNav from './TopNav'
 
-const EXEMPT_ONBOARDING_PREFIXES = ['/onboarding', '/settings']
+const EXEMPT_ONBOARDING_PREFIXES = ['/onboarding', '/settings', '/share']
 
 const isOnboardingExemptPath = (pathname) =>
   EXEMPT_ONBOARDING_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`))

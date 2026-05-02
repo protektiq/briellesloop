@@ -143,6 +143,17 @@ const DEFAULT_COACH_TITLE = "You're in your seat. That's the hardest part."
 const DEFAULT_COACH_BODY =
   'Take your time. Read it twice if you need to — there is no timer here.'
 
+const COACH_TTS_MAX_CHARS = 2000
+
+const awaitCoachSpeakOrCap = async (speakPromise) => {
+  await Promise.race([
+    speakPromise,
+    new Promise((resolve) => {
+      window.setTimeout(resolve, 45_000)
+    }),
+  ])
+}
+
 const PracticePage = () => {
   const location = useLocation()
   const navigate = useNavigate()
@@ -173,7 +184,7 @@ const PracticePage = () => {
   const [itemRenderedAtMs, setItemRenderedAtMs] = useState(() => Date.now())
   const [consecutiveWrongCount, setConsecutiveWrongCount] = useState(0)
   const [breakOfferReason, setBreakOfferReason] = useState('')
-  const [frustrationTimeMs, setFrustrationTimeMs] = useState(60_000)
+  const [frustrationTimeMs, setFrustrationTimeMs] = useState(180_000)
   const [sessionStudentId, setSessionStudentId] = useState('')
   const [writingRubric, setWritingRubric] = useState(null)
   const [writingEncouragement, setWritingEncouragement] = useState('')
@@ -184,6 +195,7 @@ const PracticePage = () => {
   const [spellingUseKeyboard, setSpellingUseKeyboard] = useState(false)
   const slowTriggerItemIdRef = useRef('')
   const spellingReplayRef = useRef({ audio: null, revoke: null })
+  const coachTtsRevokeRef = useRef(null)
   const inputRef = useRef(null)
   const breakOfferReasonRef = useRef('')
   const attemptStatsRef = useRef({ correct: 0, attempted: 0 })
@@ -278,6 +290,11 @@ const PracticePage = () => {
         prev.revoke()
       }
       spellingReplayRef.current = { audio: null, revoke: null }
+      const coachRevoke = coachTtsRevokeRef.current
+      if (typeof coachRevoke === 'function') {
+        coachTtsRevokeRef.current = null
+        coachRevoke()
+      }
     }
   }, [])
 
@@ -370,6 +387,60 @@ const PracticePage = () => {
     }
   }, [spellingWord, ttsVoice])
 
+  const stopCoachTts = useCallback(() => {
+    const revoke = coachTtsRevokeRef.current
+    if (typeof revoke === 'function') {
+      coachTtsRevokeRef.current = null
+      revoke()
+    }
+  }, [])
+
+  const speakCoachAfterAttempt = useCallback(
+    async (titleText, bodyText) => {
+      stopCoachTts()
+      const title = typeof titleText === 'string' ? titleText.trim() : ''
+      const body = typeof bodyText === 'string' ? bodyText.trim() : ''
+      if (!title && !body) {
+        return
+      }
+      const narrative = [title, body].filter(Boolean).join('. ')
+      let text = `Coach says: ${narrative}`.replace(/\s+/g, ' ').trim()
+      if (text.length > COACH_TTS_MAX_CHARS) {
+        text = text.slice(0, COACH_TTS_MAX_CHARS)
+      }
+      const voice =
+        typeof ttsVoice === 'string' && ttsVoice.trim().length > 0 ? ttsVoice.trim() : 'af_sky'
+      try {
+        const { audio, revoke } = await fetchTtsAudio({ text, voice })
+        coachTtsRevokeRef.current = revoke
+        await new Promise((resolve) => {
+          let settled = false
+          const finish = () => {
+            if (settled) {
+              return
+            }
+            settled = true
+            if (coachTtsRevokeRef.current === revoke) {
+              coachTtsRevokeRef.current = null
+            }
+            try {
+              revoke()
+            } catch {
+              /* ignore */
+            }
+            resolve()
+          }
+          audio.addEventListener('ended', finish, { once: true })
+          audio.addEventListener('error', finish, { once: true })
+          void audio.play().catch(finish)
+        })
+      } catch {
+        coachTtsRevokeRef.current = null
+      }
+    },
+    [stopCoachTts, ttsVoice],
+  )
+
   useEffect(() => {
     let isMounted = true
 
@@ -409,7 +480,7 @@ const PracticePage = () => {
           typeof frustrationPayload?.frustration_time_threshold_seconds === 'number'
         ) {
           const sec = Math.min(
-            180,
+            600,
             Math.max(20, frustrationPayload.frustration_time_threshold_seconds),
           )
           setFrustrationTimeMs(sec * 1000)
@@ -696,6 +767,8 @@ const PracticePage = () => {
         body: explanationText,
       })
 
+      const speakPromise = speakCoachAfterAttempt(feedbackText, explanationText)
+
       if (safeSkillName === 'writing') {
         const rubricFromAttempt =
           payload?.user_response?.writing_rubric &&
@@ -715,8 +788,10 @@ const PracticePage = () => {
       if (Boolean(payload.sessionComplete)) {
         if (safeSkillName === 'writing') {
           setWritingSubmissionComplete(true)
+          void speakPromise
           return
         }
+        await awaitCoachSpeakOrCap(speakPromise)
         navigateToComplete({ attempted: nextAttempted, correct: nextCorrect })
         return
       }
@@ -726,6 +801,7 @@ const PracticePage = () => {
         (!payload.next_item || currentIndex + 1 >= totalCount)
 
       if (queueExhausted) {
+        await awaitCoachSpeakOrCap(speakPromise)
         navigateToComplete({ attempted: nextAttempted, correct: nextCorrect })
         return
       }
@@ -734,6 +810,7 @@ const PracticePage = () => {
         safeSkillName === 'reading' && readingQuestionIndex < 2 && totalCount > 0
 
       if (stayOnPassage) {
+        void speakPromise
         setReadingQuestionIndex((index) => index + 1)
         const sessionState = {
           consecutiveWrong: nextWrongCount,
@@ -751,6 +828,7 @@ const PracticePage = () => {
         return
       }
 
+      void speakPromise
       setReadingQuestionIndex(0)
       setCurrentIndex((index) => index + 1)
       const sessionState = {

@@ -1664,6 +1664,65 @@
   width: 100%;
 }
 
+.share-teacher-shell {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 28px 24px 48px;
+}
+
+.share-gate {
+  max-width: 560px;
+  margin: 48px auto;
+}
+
+.share-gate-title {
+  font-family: var(--display);
+  font-size: 26px;
+  margin-bottom: 12px;
+}
+
+.share-gate-body {
+  font-size: 16px;
+  line-height: 1.55;
+  color: var(--ink-soft);
+}
+
+.dash-fluency-block {
+  margin-top: 28px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.settings-share-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.settings-share-table th,
+.settings-share-table td {
+  border: 2px solid var(--ink);
+  padding: 10px 12px;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.settings-share-table th {
+  font-family: var(--body);
+  font-weight: 800;
+  background: var(--bg-soft);
+}
+
 .dash-loading {
   font-size: 18px;
   font-weight: 700;

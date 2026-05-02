@@ -12,6 +12,14 @@ flowchart TD
   backendApi --> exportApi[/api/export/iep-pdf]
   backendApi --> settingsApi[/api/settings/*]
   backendApi --> parentApi[/api/parent/*]
+  backendApi --> shareApi[/api/share/*]
+
+  shareApi --> shareTokensTbl[share_tokens]
+  shareTokensTbl --> studentsTbl[students]
+  settingsPageShare[SettingsShareTokens] --> shareApi
+  teacherSharePage[TeacherDashboardShareRoute] --> shareApi
+  frontendApp --> teacherSharePage
+  frontendApp --> settingsPageShare
 
   parentDashboard[ParentDashboard] --> studentsTbl[students]
   parentDashboard --> parentSettingsTbl[parent_settings]
@@ -50,6 +58,9 @@ flowchart TD
   dashboardApi --> weeklyInsightsTbl
   dashboardApi --> sessionsTbl
   dashboardApi --> brainBreaksTbl
+  shareApi --> sessionsTbl
+  shareApi --> attemptsTbl
+  shareApi --> weeklyInsightsTbl
   exportApi --> sessionsTbl
   exportApi --> weeklyInsightsTbl
   exportApi --> itemMasteryTbl
@@ -65,8 +76,9 @@ flowchart TD
 - Weekly summaries are persisted in `weekly_insights` for parent review and IEP reporting.
 - API layer now includes SRS-driven queue building and mastery updates in `/api/items/*`.
 - **Parent PIN:** `parent_settings.parent_pin_hash` (bcrypt). `GET /api/settings/parent-pin`, `POST /api/settings/parent-pin`. Unlock: `POST /api/parent/verify-pin`. Frontend keeps an unlocked flag in `sessionStorage` for `/parent/*`.
+- **Teacher / IEP share (FR-38–FR-40):** `share_tokens` stores opaque 64-hex tokens with `expires_at` and optional `revoked_at`. Settings calls `POST /api/share/token`, `GET /api/share/tokens`, `DELETE /api/share/token/:id`. The `/share/:token` route (outside `Layout` and outside the parent PIN gate) calls `GET /api/share/validate/:token` then `GET /api/share/week/:token` for a sanitized week payload (no `student_id`, no `agent_activity`) plus `fluency_series` from reading attempts. `FRONTEND_ORIGIN` in the backend env builds the printable URL in `POST` responses when needed.
 - **Phase 6 learner profile & onboarding:** `GET/PATCH /api/settings/profile` reads/writes `students.interests`, `skills.iep_goal_text`, `student_skill_levels.level`, `student_tuning.session_item_count`, and `parent_settings` voice fields (`voice_math_enabled`, `voice_spelling_enabled`, `tts_voice`). `POST /api/settings/onboarding/complete` sets `parent_settings.onboarding_completed_at`. The `/onboarding` route (outside `Layout`) collects interests, PIN, and session length before redirecting to `/`. Layout redirects incomplete onboarding to `/onboarding` except for `/settings`.
-- **Kokoro TTS:** `GET /api/tts` (WAV) and `GET /api/tts/voices` serve local Kokoro synthesis for spelling practice and settings voice preview lists. Practice fetches audio blobs from the Express server (not `speechSynthesis`). Reading practice is text-only (no passage TTS in the reading skill view).
+- **Kokoro TTS:** `GET /api/tts` (WAV) and `GET /api/tts/voices` serve local Kokoro synthesis for spelling practice, **Coach Says** read-back after each graded attempt on `PracticePage` (uses `parent_settings.tts_voice`), and settings voice preview lists. Practice fetches audio blobs from the Express server (not `speechSynthesis`). Reading practice is text-only (no passage TTS in the reading skill view).
 - **Monthly API spend:** `GET /api/agents/cost-summary` sums `agent_runs.cost_usd` and `ai_generations.cost_usd` for a calendar month (optional `?month=YYYY-MM`). Rendered on `/parent/agents`.
 - **Parent dashboard data:** `GET /api/dashboard/week` aggregates `sessions`, `brain_breaks`, `skills`, `weekly_insights` (UTC Monday week windows).
 - **FR-16 skill drop:** On each graded attempt, `/api/items/:id/attempt` computes **UTC calendar week** accuracy per skill; if below `weekly_drop_accuracy` (tuning) with enough attempts, applies **at most one** level decrease per skill per week, updates `student_skill_levels.last_weekly_drop_week_start`, and bumps `item_mastery.next_review_at` for recent misses (14 days).
@@ -80,6 +92,7 @@ flowchart TD
 flowchart TD
   browser[Browser] --> reactRouter[ReactRouter]
   reactRouter --> onboardingRoute[OnboardingPage route /onboarding]
+  reactRouter --> teacherShareRoute[TeacherDashboardPage route /share/:token]
   reactRouter --> layout[Layout]
   layout --> topNav[TopNav]
   layout --> routeOutlet[RouteOutlet]
@@ -235,7 +248,7 @@ flowchart TD
   lowMoodGate -->|yes| breakRouteLow[/break triggered_by low_mood]
   lowMoodGate -->|no| practicePage[PracticePage]
 
-  practicePage --> frustrationGate{two_wrong_or_over_60s_or_user_button}
+  practicePage --> frustrationGate{two_wrong_or_slow_item_or_user_button}
   frustrationGate -->|offer_accept| breakRouteInSession[/break triggered_by auto_or_user]
   frustrationGate -->|decline| practicePage
 

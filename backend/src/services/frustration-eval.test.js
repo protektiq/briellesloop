@@ -3,7 +3,7 @@ import { evaluateFrustrationOffer } from "./frustration-eval.js";
 
 const baseTuning = {
   frustrationWrongThreshold: 2,
-  frustrationTimeThreshold: 60,
+  frustrationTimeThreshold: 180,
   signals: [{ type: "session_attempts", threshold: 20 }],
 };
 
@@ -25,7 +25,7 @@ describe("evaluateFrustrationOffer", () => {
     const r = evaluateFrustrationOffer(
       {
         consecutive_wrong: 0,
-        seconds_on_current_item: 70,
+        seconds_on_current_item: 200,
         session_attempt_count: 3,
       },
       baseTuning,

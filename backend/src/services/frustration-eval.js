@@ -1,7 +1,7 @@
 import { query } from "../db.js";
 
 const DEFAULT_WRONG = 2;
-const DEFAULT_TIME_SEC = 60;
+const DEFAULT_TIME_SEC = 180;
 
 /**
  * Known frustration_signal:{type} keys that the practice UI can evaluate server-side.
@@ -52,7 +52,7 @@ const parseTuningRows = (rows) => {
         Math.min(5, Math.max(1, val)),
       );
     } else if (name === "frustration_time_threshold") {
-      frustrationTimeThreshold = Math.min(180, Math.max(20, val));
+      frustrationTimeThreshold = Math.min(600, Math.max(20, val));
     } else if (name.startsWith("frustration_signal:")) {
       const type = name.slice("frustration_signal:".length).trim();
       if (type.length > 0) {

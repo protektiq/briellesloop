@@ -62,6 +62,13 @@ const SettingsPage = () => {
   const [ttsVoice, setTtsVoice] = useState('af_sky')
   const [ttsVoicesList, setTtsVoicesList] = useState(() => ['af_sky', 'af_bella', 'am_adam'])
 
+  const [shareTokens, setShareTokens] = useState([])
+  const [shareTokensLoading, setShareTokensLoading] = useState(false)
+  const [shareTokensError, setShareTokensError] = useState('')
+  const [shareGenerateBusy, setShareGenerateBusy] = useState(false)
+  const [shareCopyMessage, setShareCopyMessage] = useState('')
+  const [shareRevokeBusy, setShareRevokeBusy] = useState('')
+
   useEffect(() => {
     let cancelled = false
 
@@ -183,6 +190,39 @@ const SettingsPage = () => {
       cancelled = true
     }
   }, [])
+
+  const loadShareTokens = useCallback(async () => {
+    try {
+      setShareTokensLoading(true)
+      setShareTokensError('')
+      const qs = new URLSearchParams()
+      if (typeof studentId === 'string' && studentId.trim().length > 0) {
+        qs.set('student_id', studentId.trim())
+      }
+      const suffix = qs.toString()
+      const response = await fetch(
+        `${API_BASE_URL}/api/share/tokens${suffix.length > 0 ? `?${suffix}` : ''}`,
+      )
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw new Error(data.message ?? `Could not load share links (${response.status})`)
+      }
+      if (Array.isArray(data.tokens)) {
+        setShareTokens(data.tokens)
+      } else {
+        setShareTokens([])
+      }
+    } catch (err) {
+      setShareTokensError(err instanceof Error ? err.message : 'Share links unavailable.')
+      setShareTokens([])
+    } finally {
+      setShareTokensLoading(false)
+    }
+  }, [studentId])
+
+  useEffect(() => {
+    void loadShareTokens()
+  }, [loadShareTokens])
 
   useEffect(() => {
     let cancelled = false
@@ -387,6 +427,93 @@ const SettingsPage = () => {
   }, [])
 
   const skillNames = Object.keys(iepBySkill).sort()
+
+  const formatShareTs = useCallback((value) => {
+    if (value === null || value === undefined) {
+      return '—'
+    }
+    const d = value instanceof Date ? value : new Date(value)
+    if (Number.isNaN(d.getTime())) {
+      return '—'
+    }
+    return d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+  }, [])
+
+  const handleGenerateShareLink = useCallback(async () => {
+    setShareCopyMessage('')
+    setShareTokensError('')
+    const days = 30
+    try {
+      setShareGenerateBusy(true)
+      const body = { days }
+      if (studentId) {
+        body.student_id = studentId
+      }
+      const response = await fetch(`${API_BASE_URL}/api/share/token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw new Error(data.message ?? `Could not create link (${response.status})`)
+      }
+      if (typeof data.token !== 'string' || data.token.length < 32) {
+        throw new Error('Invalid response from server.')
+      }
+      const origin =
+        typeof window !== 'undefined' && window.location?.origin
+          ? window.location.origin
+          : 'http://localhost:5173'
+      const copyUrl = `${origin}/share/${data.token}`
+      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(copyUrl)
+      } else {
+        throw new Error('Clipboard is not available in this browser.')
+      }
+      setShareCopyMessage(`Link copied! Valid for ${days} days.`)
+      await loadShareTokens()
+    } catch (err) {
+      setShareTokensError(err instanceof Error ? err.message : 'Could not generate link.')
+    } finally {
+      setShareGenerateBusy(false)
+    }
+  }, [studentId, loadShareTokens])
+
+  const handleRevokeShareToken = useCallback(
+    async (rowId) => {
+      const raw = typeof rowId === 'string' ? rowId.trim() : String(rowId ?? '').trim()
+      const id = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        raw,
+      )
+        ? raw
+        : ''
+      if (!id) {
+        return
+      }
+      setShareTokensError('')
+      setShareRevokeBusy(id)
+      try {
+        const qs = new URLSearchParams()
+        if (studentId) {
+          qs.set('student_id', studentId)
+        }
+        const response = await fetch(`${API_BASE_URL}/api/share/token/${id}?${qs.toString()}`, {
+          method: 'DELETE',
+        })
+        const data = await response.json().catch(() => ({}))
+        if (!response.ok) {
+          throw new Error(data.message ?? `Revoke failed (${response.status})`)
+        }
+        await loadShareTokens()
+      } catch (err) {
+        setShareTokensError(err instanceof Error ? err.message : 'Could not revoke link.')
+      } finally {
+        setShareRevokeBusy('')
+      }
+    },
+    [studentId, loadShareTokens],
+  )
 
   return (
     <section className="settings-section">
@@ -622,6 +749,94 @@ const SettingsPage = () => {
               {isSaving ? 'Saving…' : 'Save parent PIN'}
             </button>
           </form>
+        )}
+      </div>
+
+      <div className="settings-card settings-card-wide" style={{ marginTop: 28 }}>
+        <h2 className="settings-title">Share with IEP team</h2>
+        <p className="settings-lead">
+          Generate a read-only link for Brielle&apos;s teacher or IEP team. Anyone with the link can
+          view the progress dashboard until it expires. It does not allow changes or access to
+          settings.
+        </p>
+        <p className="settings-lead" style={{ marginTop: 8, fontWeight: 700 }}>
+          Anyone with this link can view Brielle&apos;s dashboard. It expires automatically. Do not
+          share publicly.
+        </p>
+        {shareTokensError ? (
+          <p className="settings-error" role="alert">
+            {shareTokensError}
+          </p>
+        ) : null}
+        {shareCopyMessage ? (
+          <p className="settings-success" role="status">
+            {shareCopyMessage}
+          </p>
+        ) : null}
+        <button
+          type="button"
+          className="primary-btn settings-submit"
+          onClick={handleGenerateShareLink}
+          disabled={shareGenerateBusy}
+          aria-busy={shareGenerateBusy}
+        >
+          {shareGenerateBusy ? 'Generating…' : 'Generate link'}
+        </button>
+        {shareTokensLoading ? (
+          <p role="status" style={{ marginTop: 16 }}>
+            Loading share links…
+          </p>
+        ) : shareTokens.length === 0 ? (
+          <p className="settings-agent-meta" style={{ marginTop: 16 }}>
+            No share links yet.
+          </p>
+        ) : (
+          <div style={{ marginTop: 20, overflowX: 'auto' }}>
+            <table className="settings-share-table">
+              <caption className="visually-hidden">Active and past share links</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Created</th>
+                  <th scope="col">Expires</th>
+                  <th scope="col">Last accessed</th>
+                  <th scope="col">Status</th>
+                  <th scope="col">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {shareTokens.map((row) => {
+                  const rid = row.id != null ? String(row.id).trim() : ''
+                  const revoked = row.revoked_at != null
+                  const exp =
+                    row.expires_at != null ? new Date(row.expires_at).getTime() : Number.NaN
+                  const expired = !revoked && Number.isFinite(exp) && exp <= Date.now()
+                  const statusLabel = revoked ? 'Revoked' : expired ? 'Expired' : 'Active'
+                  return (
+                    <tr key={rid || String(row.created_at)}>
+                      <td>{formatShareTs(row.created_at)}</td>
+                      <td>{formatShareTs(row.expires_at)}</td>
+                      <td>{row.last_accessed_at ? formatShareTs(row.last_accessed_at) : '—'}</td>
+                      <td>{statusLabel}</td>
+                      <td>
+                        {revoked || expired ? (
+                          <span className="settings-agent-meta">—</span>
+                        ) : (
+                          <button
+                            type="button"
+                            className="ghost-btn"
+                            disabled={shareRevokeBusy === rid}
+                            onClick={() => handleRevokeShareToken(rid)}
+                          >
+                            {shareRevokeBusy === rid ? 'Revoking…' : 'Revoke'}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
 

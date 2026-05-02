@@ -9,6 +9,7 @@ import ParentDashboardPage from './pages/ParentDashboardPage'
 import PracticePage from './pages/PracticePage'
 import SessionCompletePage from './pages/SessionCompletePage'
 import SettingsPage from './pages/SettingsPage'
+import TeacherDashboardPage from './pages/TeacherDashboardPage'
 import TodayPage from './pages/TodayPage'
 
 const FontBootstrap = () => {
@@ -22,6 +23,7 @@ const App = () => {
       <FontBootstrap />
       <Routes>
         <Route path="/onboarding" element={<OnboardingPage />} />
+        <Route path="/share/:token" element={<TeacherDashboardPage />} />
         <Route element={<Layout />}>
           <Route path="/" element={<TodayPage />} />
           <Route path="/practice/:skillName" element={<PracticePage />} />

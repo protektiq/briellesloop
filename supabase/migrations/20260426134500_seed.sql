@@ -49,5 +49,5 @@ CROSS JOIN (
     ('tier_advance_response_time', 30.00::DECIMAL(8,2), 30.00::DECIMAL(8,2), 10.00::DECIMAL(8,2), 90.00::DECIMAL(8,2)),
     ('session_item_count', 5.00::DECIMAL(8,2), 5.00::DECIMAL(8,2), 3.00::DECIMAL(8,2), 10.00::DECIMAL(8,2)),
     ('frustration_wrong_threshold', 2.00::DECIMAL(8,2), 2.00::DECIMAL(8,2), 1.00::DECIMAL(8,2), 5.00::DECIMAL(8,2)),
-    ('frustration_time_threshold', 60.00::DECIMAL(8,2), 60.00::DECIMAL(8,2), 20.00::DECIMAL(8,2), 180.00::DECIMAL(8,2))
+    ('frustration_time_threshold', 180.00::DECIMAL(8,2), 180.00::DECIMAL(8,2), 20.00::DECIMAL(8,2), 600.00::DECIMAL(8,2))
 ) AS tuning(parameter_name, current_value, default_value, min_value, max_value);
