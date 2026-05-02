@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { TTS_VOICE_OPTIONS } from "../constants/tts-voices.js";
 import { getClient, query } from "../db.js";
 import { resolveStudentId } from "../services/student-resolve.js";
 
@@ -102,6 +103,32 @@ const clampSessionItemCount = (raw) => {
   return n;
 };
 
+const TTS_VOICE_SET = new Set(TTS_VOICE_OPTIONS);
+
+const sanitizeOptionalBoolean = (raw) => {
+  if (raw === undefined) {
+    return undefined;
+  }
+  if (typeof raw === "boolean") {
+    return raw;
+  }
+  return null;
+};
+
+const sanitizeTtsVoice = (raw) => {
+  if (raw === undefined) {
+    return undefined;
+  }
+  if (typeof raw !== "string") {
+    return null;
+  }
+  const trimmed = raw.trim();
+  if (!TTS_VOICE_SET.has(trimmed)) {
+    return null;
+  }
+  return trimmed;
+};
+
 const parseUuidParam = (value) => {
   if (typeof value !== "string") {
     return null;
@@ -132,7 +159,11 @@ router.get("/profile", async (req, res, next) => {
       ),
       query(
         `
-          SELECT onboarding_completed_at
+          SELECT
+            onboarding_completed_at,
+            voice_math_enabled,
+            voice_spelling_enabled,
+            tts_voice
           FROM parent_settings
           WHERE student_id = $1
           LIMIT 1
@@ -172,13 +203,21 @@ router.get("/profile", async (req, res, next) => {
       level: Number.isInteger(levelsByName[row.name]) ? levelsByName[row.name] : 1,
     }));
 
+    const ps = psRow.rows[0] ?? null;
+
     return res.json({
       student_id: studentId,
       student_name: s.name,
       interests: Array.isArray(s.interests) ? s.interests : [],
       skills: skillsPayload,
       session_item_count: sessionItemCount,
-      onboarding_completed_at: psRow.rows[0]?.onboarding_completed_at ?? null,
+      onboarding_completed_at: ps?.onboarding_completed_at ?? null,
+      voice_math_enabled: ps?.voice_math_enabled ?? true,
+      voice_spelling_enabled: ps?.voice_spelling_enabled ?? false,
+      tts_voice:
+        typeof ps?.tts_voice === "string" && TTS_VOICE_SET.has(ps.tts_voice.trim())
+          ? ps.tts_voice.trim()
+          : "af_sky",
       generated_at: new Date().toISOString(),
     });
   } catch (error) {
@@ -203,6 +242,9 @@ router.patch("/profile", async (req, res, next) => {
     const iepGoals = sanitizeIepGoals(req.body?.iep_goals, allowedNames);
     const skillLevels = sanitizeSkillLevels(req.body?.skill_levels, allowedNames);
     const sessionItemCount = clampSessionItemCount(req.body?.session_item_count);
+    const voiceMathEnabled = sanitizeOptionalBoolean(req.body?.voice_math_enabled);
+    const voiceSpellingEnabled = sanitizeOptionalBoolean(req.body?.voice_spelling_enabled);
+    const ttsVoice = sanitizeTtsVoice(req.body?.tts_voice);
 
     if (req.body?.interests !== undefined && interests === null) {
       return res.status(400).json({ error: "Invalid interests (max 8, ≤40 chars each)." });
@@ -216,12 +258,26 @@ router.patch("/profile", async (req, res, next) => {
     if (req.body?.session_item_count !== undefined && sessionItemCount === null) {
       return res.status(400).json({ error: `session_item_count must be ${MIN_SESSION_ITEMS}–${MAX_SESSION_ITEMS}.` });
     }
+    if (req.body?.voice_math_enabled !== undefined && voiceMathEnabled === null) {
+      return res.status(400).json({ error: "voice_math_enabled must be a boolean." });
+    }
+    if (req.body?.voice_spelling_enabled !== undefined && voiceSpellingEnabled === null) {
+      return res.status(400).json({ error: "voice_spelling_enabled must be a boolean." });
+    }
+    if (req.body?.tts_voice !== undefined && ttsVoice === null) {
+      return res.status(400).json({
+        error: `tts_voice must be one of: ${TTS_VOICE_OPTIONS.join(", ")}.`,
+      });
+    }
 
     if (
       interests === undefined &&
       iepGoals === undefined &&
       skillLevels === undefined &&
-      sessionItemCount === undefined
+      sessionItemCount === undefined &&
+      voiceMathEnabled === undefined &&
+      voiceSpellingEnabled === undefined &&
+      ttsVoice === undefined
     ) {
       return res.status(400).json({ error: "No valid fields to update." });
     }
@@ -269,6 +325,51 @@ router.patch("/profile", async (req, res, next) => {
             WHERE student_id = $1::uuid AND parameter_name = 'session_item_count'
           `,
           [studentId, sessionItemCount],
+        );
+      }
+
+      if (
+        voiceMathEnabled !== undefined ||
+        voiceSpellingEnabled !== undefined ||
+        ttsVoice !== undefined
+      ) {
+        const existingPs = await client.query(
+          `
+            SELECT voice_math_enabled, voice_spelling_enabled, tts_voice
+            FROM parent_settings
+            WHERE student_id = $1::uuid
+            LIMIT 1
+          `,
+          [studentId],
+        );
+        const row = existingPs.rows[0];
+        const nextMath = voiceMathEnabled !== undefined ? voiceMathEnabled : Boolean(row?.voice_math_enabled ?? true);
+        const nextSpell =
+          voiceSpellingEnabled !== undefined ? voiceSpellingEnabled : Boolean(row?.voice_spelling_enabled ?? false);
+        const nextVoice =
+          ttsVoice !== undefined
+            ? ttsVoice
+            : typeof row?.tts_voice === "string" && TTS_VOICE_SET.has(row.tts_voice.trim())
+              ? row.tts_voice.trim()
+              : "af_sky";
+
+        await client.query(
+          `
+            INSERT INTO parent_settings (
+              student_id,
+              voice_math_enabled,
+              voice_spelling_enabled,
+              tts_voice,
+              updated_at
+            )
+            VALUES ($1::uuid, $2::boolean, $3::boolean, $4::text, NOW())
+            ON CONFLICT (student_id) DO UPDATE SET
+              voice_math_enabled = EXCLUDED.voice_math_enabled,
+              voice_spelling_enabled = EXCLUDED.voice_spelling_enabled,
+              tts_voice = EXCLUDED.tts_voice,
+              updated_at = NOW()
+          `,
+          [studentId, nextMath, nextSpell, nextVoice],
         );
       }
 

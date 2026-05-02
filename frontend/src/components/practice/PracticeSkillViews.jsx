@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { MicButton } from '../MicButton.jsx'
+import { fetchTtsAudio } from '../../utils/tts.js'
 
 export const MathSkillView = ({
   currentItem,
@@ -10,6 +12,7 @@ export const MathSkillView = ({
   onKeyDown,
   inputRef,
   inputDisabled,
+  voiceMathEnabled = false,
 }) => {
   const renderStepBoxes = () => {
     if (!currentItem) {
@@ -72,6 +75,14 @@ export const MathSkillView = ({
         disabled={inputDisabled}
         autoFocus
       />
+      {voiceMathEnabled ? (
+        <MicButton
+          disabled={inputDisabled}
+          onTranscript={(text) => {
+            onAnswerChange(text)
+          }}
+        />
+      ) : null}
     </>
   )
 }
@@ -122,32 +133,61 @@ export const SpellingSkillView = ({
   onKeyDown,
   inputRef,
   inputDisabled,
+  spellWithVoiceOnly = false,
+  onRequestTypingFallback,
 }) => {
+  const showVoiceOnly = Boolean(spellWithVoiceOnly)
+
   return (
     <>
       <div className="activity-question">
-        Listen to the word, then spell it. Use Hear again in the row below if you need a replay.
+        {showVoiceOnly
+          ? 'Listen to the word, then say it back clearly. Use Hear again below if you need a replay.'
+          : 'Listen to the word, then spell it. Use Hear again in the row below if you need a replay.'}
       </div>
       {poolLabel ? (
         <p className="spelling-pool-tag" aria-label="Word pattern">
           Pattern: {poolLabel}
         </p>
       ) : null}
-      <input
-        ref={inputRef}
-        type="text"
-        className="input-line"
-        value={answer}
-        onChange={(event) => onAnswerChange(event.target.value)}
-        onKeyDown={onKeyDown}
-        placeholder="Type the word"
-        aria-label="Spell the word you heard"
-        disabled={inputDisabled}
-        autoComplete="off"
-        autoCorrect="off"
-        spellCheck={false}
-        autoFocus
-      />
+      {showVoiceOnly ? (
+        <>
+          <MicButton
+            disabled={inputDisabled}
+            onTranscript={(text) => {
+              onAnswerChange(text)
+            }}
+          />
+          {typeof onRequestTypingFallback === 'function' ? (
+            <div className="spelling-voice-fallback">
+              <button
+                type="button"
+                className="inline-link"
+                style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', font: 'inherit' }}
+                onClick={onRequestTypingFallback}
+              >
+                Type the word instead
+              </button>
+            </div>
+          ) : null}
+        </>
+      ) : (
+        <input
+          ref={inputRef}
+          type="text"
+          className="input-line"
+          value={answer}
+          onChange={(event) => onAnswerChange(event.target.value)}
+          onKeyDown={onKeyDown}
+          placeholder="Type the word"
+          aria-label="Spell the word you heard"
+          disabled={inputDisabled}
+          autoComplete="off"
+          autoCorrect="off"
+          spellCheck={false}
+          autoFocus
+        />
+      )}
     </>
   )
 }
@@ -284,26 +324,62 @@ export const poolDisplayName = (pool) => {
   return ''
 }
 
-export const useSpellingSpeech = (wordForSpeech, itemId) => {
+export const useSpellingSpeech = (wordForSpeech, itemId, voice = 'af_sky') => {
   const lastSpokenRef = useRef('')
+  const audioRef = useRef(null)
+  const revokeRef = useRef(null)
 
   useEffect(() => {
-    if (typeof window === 'undefined' || !window.speechSynthesis) {
-      return
-    }
     if (!wordForSpeech || !itemId) {
-      return
+      return undefined
     }
-    const key = `${itemId}:${wordForSpeech}`
+    const safeVoice = typeof voice === 'string' && voice.trim().length > 0 ? voice.trim() : 'af_sky'
+    const key = `${itemId}:${wordForSpeech}:${safeVoice}`
     if (lastSpokenRef.current === key) {
-      return
+      return undefined
     }
     lastSpokenRef.current = key
-    window.speechSynthesis.cancel()
-    const utter = new SpeechSynthesisUtterance(wordForSpeech)
-    utter.rate = 0.92
-    window.speechSynthesis.speak(utter)
-  }, [wordForSpeech, itemId])
+
+    const cleanupAudio = () => {
+      if (audioRef.current) {
+        try {
+          audioRef.current.pause()
+        } catch {
+          /* ignore */
+        }
+        audioRef.current = null
+      }
+      if (revokeRef.current) {
+        revokeRef.current()
+        revokeRef.current = null
+      }
+    }
+
+    let cancelled = false
+
+    const run = async () => {
+      try {
+        const { audio, revoke } = await fetchTtsAudio({ text: wordForSpeech, voice: safeVoice })
+        if (cancelled) {
+          revoke()
+          return
+        }
+        cleanupAudio()
+        audioRef.current = audio
+        revokeRef.current = revoke
+        await audio.play()
+      } catch (err) {
+        console.warn('Kokoro spelling TTS failed', err)
+      }
+    }
+
+    void run()
+
+    return () => {
+      cancelled = true
+      cleanupAudio()
+    }
+  }, [wordForSpeech, itemId, voice])
 }
 
 export const useTypingLiveStats = (answer, targetSentence, itemRenderedAtMs) => {

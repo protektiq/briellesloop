@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { API_BASE_URL, FONT_STEP_STORAGE_KEY, FONT_STEPS } from '../constants/api'
 import {
   applyFontStepToDocument,
@@ -57,6 +57,10 @@ const SettingsPage = () => {
   const [iepBySkill, setIepBySkill] = useState(() => ({}))
   const [levelBySkill, setLevelBySkill] = useState(() => ({}))
   const [sessionItems, setSessionItems] = useState(5)
+  const [voiceMathEnabled, setVoiceMathEnabled] = useState(true)
+  const [voiceSpellingEnabled, setVoiceSpellingEnabled] = useState(false)
+  const [ttsVoice, setTtsVoice] = useState('af_sky')
+  const [ttsVoicesList, setTtsVoicesList] = useState(() => ['af_sky', 'af_bella', 'am_adam'])
 
   useEffect(() => {
     let cancelled = false
@@ -128,6 +132,15 @@ const SettingsPage = () => {
         setLevelBySkill(lvl)
         const count = Number.parseInt(String(data.session_item_count), 10)
         setSessionItems(Number.isInteger(count) ? Math.min(10, Math.max(3, count)) : 5)
+        if (typeof data.voice_math_enabled === 'boolean') {
+          setVoiceMathEnabled(data.voice_math_enabled)
+        }
+        if (typeof data.voice_spelling_enabled === 'boolean') {
+          setVoiceSpellingEnabled(data.voice_spelling_enabled)
+        }
+        if (typeof data.tts_voice === 'string' && data.tts_voice.trim().length > 0) {
+          setTtsVoice(data.tts_voice.trim())
+        }
       } catch (err) {
         if (!cancelled) {
           setProfileError(err instanceof Error ? err.message : 'Profile unavailable.')
@@ -140,6 +153,32 @@ const SettingsPage = () => {
     }
 
     loadProfile()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const speechRecognitionSupported = useMemo(() => {
+    if (typeof window === 'undefined') {
+      return false
+    }
+    return Boolean(window.SpeechRecognition || window.webkitSpeechRecognition)
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    const loadVoices = async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/tts/voices`)
+        const list = await response.json().catch(() => [])
+        if (!cancelled && response.ok && Array.isArray(list) && list.length > 0) {
+          setTtsVoicesList(list.filter((v) => typeof v === 'string' && v.trim().length > 0))
+        }
+      } catch {
+        /* keep defaults */
+      }
+    }
+    void loadVoices()
     return () => {
       cancelled = true
     }
@@ -305,6 +344,9 @@ const SettingsPage = () => {
         iep_goals,
         skill_levels,
         session_item_count: sessionItems,
+        voice_math_enabled: voiceMathEnabled,
+        voice_spelling_enabled: voiceSpellingEnabled,
+        tts_voice: ttsVoice,
       }
       if (studentId) {
         payload.student_id = studentId
@@ -325,7 +367,16 @@ const SettingsPage = () => {
     } finally {
       setProfileSaving(false)
     }
-  }, [iepBySkill, interestsRaw, levelBySkill, sessionItems, studentId])
+  }, [
+    iepBySkill,
+    interestsRaw,
+    levelBySkill,
+    sessionItems,
+    studentId,
+    ttsVoice,
+    voiceMathEnabled,
+    voiceSpellingEnabled,
+  ])
 
   const handleSessionItemsChange = useCallback((event) => {
     const v = Number.parseInt(String(event.target.value), 10)
@@ -406,6 +457,58 @@ const SettingsPage = () => {
                   ))}
                 </div>
               </div>
+            </div>
+
+            <div className="settings-voice-block" style={{ marginTop: 20 }}>
+              <h2 className="settings-skill-title">Voice and read-aloud</h2>
+              <p className="settings-lead" style={{ marginTop: 6 }}>
+                Practice can use the browser microphone for math answers and optional spelling. Passage
+                and word audio use Kokoro on this computer (no cloud TTS). Typing is always available
+                in practice.
+              </p>
+              <label className="settings-inline-label" style={{ display: 'flex', gap: 10, marginTop: 12 }}>
+                <input
+                  type="checkbox"
+                  checked={voiceMathEnabled}
+                  onChange={(e) => setVoiceMathEnabled(e.target.checked)}
+                  disabled={!speechRecognitionSupported}
+                />
+                <span>
+                  Voice input for math
+                  {!speechRecognitionSupported ? (
+                    <span style={{ fontWeight: 400 }}> (not supported in this browser)</span>
+                  ) : null}
+                </span>
+              </label>
+              <label className="settings-inline-label" style={{ display: 'flex', gap: 10, marginTop: 10 }}>
+                <input
+                  type="checkbox"
+                  checked={voiceSpellingEnabled}
+                  onChange={(e) => setVoiceSpellingEnabled(e.target.checked)}
+                  disabled={!speechRecognitionSupported}
+                />
+                <span>
+                  Say it back (spelling)
+                  {!speechRecognitionSupported ? (
+                    <span style={{ fontWeight: 400 }}> (needs speech recognition)</span>
+                  ) : null}
+                </span>
+              </label>
+              <label className="settings-label" htmlFor="settings-tts-voice" style={{ marginTop: 14 }}>
+                Kokoro voice for read-aloud and spelling
+              </label>
+              <select
+                id="settings-tts-voice"
+                className="settings-input"
+                value={ttsVoicesList.includes(ttsVoice) ? ttsVoice : ttsVoicesList[0]}
+                onChange={(e) => setTtsVoice(e.target.value)}
+              >
+                {ttsVoicesList.map((v) => (
+                  <option key={v} value={v}>
+                    {v}
+                  </option>
+                ))}
+              </select>
             </div>
 
             {skillNames.map((name) => (

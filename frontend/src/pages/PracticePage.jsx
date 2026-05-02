@@ -11,6 +11,7 @@ import {
   useTypingLiveStats,
 } from '../components/practice/PracticeSkillViews.jsx'
 import { API_BASE_URL } from '../constants/api'
+import { fetchTtsAudio } from '../utils/tts.js'
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
@@ -177,7 +178,12 @@ const PracticePage = () => {
   const [writingRubric, setWritingRubric] = useState(null)
   const [writingEncouragement, setWritingEncouragement] = useState('')
   const [writingSubmissionComplete, setWritingSubmissionComplete] = useState(false)
+  const [voiceMathEnabled, setVoiceMathEnabled] = useState(true)
+  const [voiceSpellingEnabled, setVoiceSpellingEnabled] = useState(false)
+  const [ttsVoice, setTtsVoice] = useState('af_sky')
+  const [spellingUseKeyboard, setSpellingUseKeyboard] = useState(false)
   const slowTriggerItemIdRef = useRef('')
+  const spellingReplayRef = useRef({ audio: null, revoke: null })
   const inputRef = useRef(null)
   const breakOfferReasonRef = useRef('')
   const attemptStatsRef = useRef({ correct: 0, attempted: 0 })
@@ -231,6 +237,49 @@ const PracticePage = () => {
       isMounted = false
     }
   }, [sessionStudentId])
+
+  useEffect(() => {
+    let cancelled = false
+    const loadVoiceSettings = async () => {
+      if (!isUuid(sessionStudentId)) {
+        return
+      }
+      try {
+        const response = await fetch(
+          `${API_BASE_URL}/api/settings/profile?student_id=${encodeURIComponent(sessionStudentId)}`,
+        )
+        const data = await response.json().catch(() => ({}))
+        if (!response.ok || cancelled) {
+          return
+        }
+        if (typeof data.voice_math_enabled === 'boolean') {
+          setVoiceMathEnabled(data.voice_math_enabled)
+        }
+        if (typeof data.voice_spelling_enabled === 'boolean') {
+          setVoiceSpellingEnabled(data.voice_spelling_enabled)
+        }
+        if (typeof data.tts_voice === 'string' && data.tts_voice.trim().length > 0) {
+          setTtsVoice(data.tts_voice.trim())
+        }
+      } catch {
+        /* keep defaults */
+      }
+    }
+    void loadVoiceSettings()
+    return () => {
+      cancelled = true
+    }
+  }, [sessionStudentId])
+
+  useEffect(() => {
+    return () => {
+      const prev = spellingReplayRef.current
+      if (prev.revoke) {
+        prev.revoke()
+      }
+      spellingReplayRef.current = { audio: null, revoke: null }
+    }
+  }, [])
 
   const totalCount = queue.length
   const currentItem = queue[currentIndex] ?? null
@@ -288,19 +337,38 @@ const PracticePage = () => {
     return typeof p === 'string' ? poolDisplayName(p) : ''
   }, [currentItem])
 
-  useSpellingSpeech(spellingWord, currentItem?.item_id)
+  const speechRecognitionSupported = useMemo(() => {
+    if (typeof window === 'undefined') {
+      return false
+    }
+    return Boolean(window.SpeechRecognition || window.webkitSpeechRecognition)
+  }, [])
+
+  useSpellingSpeech(spellingWord, currentItem?.item_id, ttsVoice)
 
   const { liveWpm, liveAccuracy } = useTypingLiveStats(answer, promptText, itemRenderedAtMs)
 
-  const speakSpellingWord = useCallback(() => {
-    if (typeof window === 'undefined' || !window.speechSynthesis || !spellingWord) {
+  const speakSpellingWord = useCallback(async () => {
+    if (!spellingWord) {
       return
     }
-    window.speechSynthesis.cancel()
-    const utter = new SpeechSynthesisUtterance(spellingWord)
-    utter.rate = 0.92
-    window.speechSynthesis.speak(utter)
-  }, [spellingWord])
+    const prev = spellingReplayRef.current
+    if (prev.revoke) {
+      prev.revoke()
+    }
+    spellingReplayRef.current = { audio: null, revoke: null }
+    try {
+      const { audio, revoke } = await fetchTtsAudio({ text: spellingWord, voice: ttsVoice })
+      spellingReplayRef.current = { audio, revoke }
+      audio.onended = () => {
+        revoke()
+        spellingReplayRef.current = { audio: null, revoke: null }
+      }
+      await audio.play()
+    } catch {
+      /* ignore */
+    }
+  }, [spellingWord, ttsVoice])
 
   useEffect(() => {
     let isMounted = true
@@ -440,6 +508,7 @@ const PracticePage = () => {
     setReadingQuestionIndex(0)
     setItemRenderedAtMs(Date.now())
     slowTriggerItemIdRef.current = ''
+    setSpellingUseKeyboard(false)
     if (inputRef.current) {
       inputRef.current.focus()
     }
@@ -878,6 +947,7 @@ const PracticePage = () => {
           onKeyDown={handleKeyDown}
           inputRef={inputRef}
           inputDisabled={inputDisabled}
+          voiceMathEnabled={Boolean(voiceMathEnabled && speechRecognitionSupported)}
         />
       )
     }
@@ -907,6 +977,12 @@ const PracticePage = () => {
           onKeyDown={handleKeyDown}
           inputRef={inputRef}
           inputDisabled={inputDisabled}
+          spellWithVoiceOnly={Boolean(
+            voiceSpellingEnabled && speechRecognitionSupported && !spellingUseKeyboard,
+          )}
+          onRequestTypingFallback={() => {
+            setSpellingUseKeyboard(true)
+          }}
         />
       )
     }

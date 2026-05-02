@@ -387,12 +387,17 @@ router.post("/:id/attempt", async (req, res, next) => {
       itemRow.skill_name ?? sessionContext.skill_name,
     );
 
-    const attemptUserResponse =
-      itemRow.item_type === "reading_passage" && readingQuestionIndexParsed !== null
-        ? { answer: answer.trim(), reading_question_index: readingQuestionIndexParsed }
-        : writingRubric
-          ? { answer: answer.trim(), writing_rubric: writingRubric }
-          : { answer: answer.trim() };
+    let attemptUserResponse;
+    if (itemRow.item_type === "reading_passage" && readingQuestionIndexParsed !== null) {
+      attemptUserResponse = {
+        answer: answer.trim(),
+        reading_question_index: readingQuestionIndexParsed,
+      };
+    } else if (writingRubric) {
+      attemptUserResponse = { answer: answer.trim(), writing_rubric: writingRubric };
+    } else {
+      attemptUserResponse = { answer: answer.trim() };
+    }
 
     const attemptInsertResult = await client.query(
       `

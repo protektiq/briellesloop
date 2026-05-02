@@ -18,6 +18,10 @@ import exportRouter from "./src/routes/export.js";
 import settingsRouter from "./src/routes/settings.js";
 import studentProfileRouter from "./src/routes/student-profile.js";
 import parentRouter from "./src/routes/parent.js";
+import ttsRouter from "./src/routes/tts.js";
+import { ensureTtsReady } from "./src/services/tts.js";
+
+const eagerKokoro = process.env.KOKORO_EAGER_INIT === "true";
 
 const app = express();
 const rawPort = process.env.PORT ?? "3001";
@@ -58,6 +62,7 @@ app.use("/api/settings", settingsRouter);
 app.use("/api/settings", studentProfileRouter);
 app.use("/api/student", studentProfileRouter);
 app.use("/api/parent", parentRouter);
+app.use("/api/tts", ttsRouter);
 
 app.use((error, _req, res, _next) => {
   const message = error instanceof Error ? error.message : "Unexpected server error";
@@ -67,9 +72,26 @@ app.use((error, _req, res, _next) => {
   });
 });
 
-app.listen(port, () => {
-  console.log(`Backend listening on http://localhost:${port}`);
-  const agentFlag = process.env.AGENT_SYSTEM_ENABLED ?? "true";
-  console.log(`AGENT_SYSTEM_ENABLED=${agentFlag}`);
-  scheduleAgentCronJobs();
-});
+const startServer = async () => {
+  if (eagerKokoro) {
+    try {
+      await ensureTtsReady();
+      console.log("Kokoro TTS warmed at startup (KOKORO_EAGER_INIT=true).");
+    } catch {
+      console.warn("Kokoro TTS failed at startup. /api/tts will load on first request or return 503.");
+    }
+  } else {
+    console.log(
+      "Kokoro TTS loads on first GET /api/tts (kokoro-js is not imported until then). Set KOKORO_EAGER_INIT=true to warm at startup.",
+    );
+  }
+
+  app.listen(port, () => {
+    console.log(`Backend listening on http://localhost:${port}`);
+    const agentFlag = process.env.AGENT_SYSTEM_ENABLED ?? "true";
+    console.log(`AGENT_SYSTEM_ENABLED=${agentFlag}`);
+    scheduleAgentCronJobs();
+  });
+};
+
+void startServer();

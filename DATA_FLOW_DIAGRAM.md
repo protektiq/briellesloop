@@ -6,6 +6,7 @@ flowchart TD
   backendApi --> sessionApi[/api/session/*]
   backendApi --> itemsApi[/api/items/*]
   backendApi --> aiApi[/api/ai/*]
+  backendApi --> ttsApi[/api/tts]
   backendApi --> dashboardApi[/api/dashboard/*]
   backendApi --> agentsApi[/api/agents/*]
   backendApi --> exportApi[/api/export/iep-pdf]
@@ -45,6 +46,7 @@ flowchart TD
   sessionApi --> sessionsTbl
   itemsApi --> itemsTbl
   itemsApi --> attemptsTbl
+  practicePage --> ttsApi
   dashboardApi --> weeklyInsightsTbl
   dashboardApi --> sessionsTbl
   dashboardApi --> brainBreaksTbl
@@ -63,7 +65,8 @@ flowchart TD
 - Weekly summaries are persisted in `weekly_insights` for parent review and IEP reporting.
 - API layer now includes SRS-driven queue building and mastery updates in `/api/items/*`.
 - **Parent PIN:** `parent_settings.parent_pin_hash` (bcrypt). `GET /api/settings/parent-pin`, `POST /api/settings/parent-pin`. Unlock: `POST /api/parent/verify-pin`. Frontend keeps an unlocked flag in `sessionStorage` for `/parent/*`.
-- **Phase 6 learner profile & onboarding:** `GET/PATCH /api/settings/profile` reads/writes `students.interests`, `skills.iep_goal_text`, `student_skill_levels.level`, and `student_tuning.session_item_count`. `POST /api/settings/onboarding/complete` sets `parent_settings.onboarding_completed_at`. The `/onboarding` route (outside `Layout`) collects interests, PIN, and session length before redirecting to `/`. Layout redirects incomplete onboarding to `/onboarding` except for `/settings`.
+- **Phase 6 learner profile & onboarding:** `GET/PATCH /api/settings/profile` reads/writes `students.interests`, `skills.iep_goal_text`, `student_skill_levels.level`, `student_tuning.session_item_count`, and `parent_settings` voice fields (`voice_math_enabled`, `voice_spelling_enabled`, `tts_voice`). `POST /api/settings/onboarding/complete` sets `parent_settings.onboarding_completed_at`. The `/onboarding` route (outside `Layout`) collects interests, PIN, and session length before redirecting to `/`. Layout redirects incomplete onboarding to `/onboarding` except for `/settings`.
+- **Kokoro TTS:** `GET /api/tts` (WAV) and `GET /api/tts/voices` serve local Kokoro synthesis for spelling practice and settings voice preview lists. Practice fetches audio blobs from the Express server (not `speechSynthesis`). Reading practice is text-only (no passage TTS in the reading skill view).
 - **Monthly API spend:** `GET /api/agents/cost-summary` sums `agent_runs.cost_usd` and `ai_generations.cost_usd` for a calendar month (optional `?month=YYYY-MM`). Rendered on `/parent/agents`.
 - **Parent dashboard data:** `GET /api/dashboard/week` aggregates `sessions`, `brain_breaks`, `skills`, `weekly_insights` (UTC Monday week windows).
 - **FR-16 skill drop:** On each graded attempt, `/api/items/:id/attempt` computes **UTC calendar week** accuracy per skill; if below `weekly_drop_accuracy` (tuning) with enough attempts, applies **at most one** level decrease per skill per week, updates `student_skill_levels.last_weekly_drop_week_start`, and bumps `item_mastery.next_review_at` for recent misses (14 days).
