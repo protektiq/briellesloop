@@ -243,16 +243,85 @@ const fetchWeeklyInsight = async (studentId, weekStartDateStr) => {
   };
 };
 
-const placeholderAgentActivity = () => [
-  {
-    id: "placeholder-feed",
-    agent_name: "Agents",
-    summary:
-      "Agent activity will appear here after Task 12 — parameter changes, curated content, and insights.",
-    reasoning: null,
-    requires_action: false,
-  },
-];
+const fetchAgentActivityForWeek = async (weekStartDateStr) => {
+  const { startIso, endIso } = toUtcRange(weekStartDateStr);
+  const runs = await query(
+    `
+      SELECT
+        ar.id,
+        ar.reasoning,
+        ar.cost_usd,
+        ar.started_at,
+        ar.status,
+        a.name AS agent_name
+      FROM agent_runs ar
+      INNER JOIN agents a ON a.id = ar.agent_id
+      WHERE ar.started_at >= $1::timestamptz
+        AND ar.started_at < $2::timestamptz
+      ORDER BY ar.started_at DESC
+      LIMIT 12
+    `,
+    [startIso, endIso],
+  );
+
+  const pending = await query(
+    `
+      SELECT
+        aa.id,
+        aa.action_type,
+        aa.rationale,
+        aa.created_at,
+        a.name AS agent_name
+      FROM agent_actions aa
+      INNER JOIN agent_runs ar ON ar.id = aa.agent_run_id
+      INNER JOIN agents a ON a.id = ar.agent_id
+      WHERE aa.requires_approval = TRUE
+        AND aa.approved IS NULL
+        AND aa.created_at >= $1::timestamptz
+        AND aa.created_at < $2::timestamptz
+      ORDER BY aa.created_at DESC
+      LIMIT 8
+    `,
+    [startIso, endIso],
+  );
+
+  const feed = [];
+
+  for (const row of pending.rows) {
+    feed.push({
+      id: `pending-${row.id}`,
+      agent_name: row.agent_name,
+      summary: `${row.action_type}: awaiting approval`,
+      reasoning: typeof row.rationale === "string" ? row.rationale : null,
+      requires_action: true,
+      action_id: row.id,
+    });
+  }
+
+  for (const row of runs.rows) {
+    const summary =
+      row.status === "failed"
+        ? `${row.agent_name} run failed`
+        : `${row.agent_name} completed`;
+    feed.push({
+      id: String(row.id),
+      agent_name: row.agent_name,
+      summary,
+      reasoning:
+        typeof row.reasoning === "string" && row.reasoning.trim().length > 0
+          ? row.reasoning.trim().slice(0, 280)
+          : null,
+      requires_action: false,
+      cost_usd: row.cost_usd,
+    });
+  }
+
+  if (feed.length === 0) {
+    return [];
+  }
+
+  return feed;
+};
 
 export const getDashboardWeekPayload = async (studentId, weekStartInput) => {
   let weekStartDateStr;
@@ -269,11 +338,12 @@ export const getDashboardWeekPayload = async (studentId, weekStartInput) => {
   const { startIso, endIso, weekEndDisplay } = toUtcRange(weekStartDateStr);
   const prevRange = toUtcRange(prevWeekStart);
 
-  const [currentStats, previousStats, moodMap, insight] = await Promise.all([
+  const [currentStats, previousStats, moodMap, insight, agentActivity] = await Promise.all([
     fetchWeeklyStats(studentId, startIso, endIso),
     fetchWeeklyStats(studentId, prevRange.startIso, prevRange.endIso),
     fetchMoodDayAggregates(studentId, startIso, endIso),
     fetchWeeklyInsight(studentId, weekStartDateStr),
+    fetchAgentActivityForWeek(weekStartDateStr),
   ]);
 
   const [skillAccuracy] = await Promise.all([
@@ -302,7 +372,7 @@ export const getDashboardWeekPayload = async (studentId, weekStartInput) => {
     skill_accuracy: skillAccuracy,
     mood_series,
     weekly_insight: insight,
-    agent_activity: placeholderAgentActivity(),
+    agent_activity: agentActivity,
     generated_at: new Date().toISOString(),
   };
 };

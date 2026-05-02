@@ -165,7 +165,7 @@ const BrainBreakPage = () => {
   return (
     <section className="break-section">
       <div className="break-frame">
-        <div className="break-content">
+        <div className="break-content learner-text-scope">
           <div className="break-eyebrow">— A pause, just for you —</div>
           <h1>{pageTitle}</h1>
           <p>{pageBody}</p>

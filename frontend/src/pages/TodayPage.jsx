@@ -3,8 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import MoodCheckIn from '../components/MoodCheckIn'
 import SkillTile from '../components/SkillTile'
 import TodayPlanCard from '../components/TodayPlanCard'
-
-const API_BASE_URL = 'http://localhost:3001'
+import { API_BASE_URL } from '../constants/api'
 const LOW_MOOD_EMOJIS = new Set(['😢', '😟'])
 const SKILL_ICON_BY_NAME = {
   reading: '📖',
@@ -128,7 +127,12 @@ const TodayPage = () => {
           return
         }
 
-        setErrorMessage(error instanceof Error ? error.message : 'Could not load today plan.')
+        let msg = error instanceof Error ? error.message : 'Could not load today plan.'
+        if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+          msg =
+            'You appear to be offline. Connect to the internet, then refresh this page or try again.'
+        }
+        setErrorMessage(msg)
       } finally {
         if (isMounted) {
           setIsLoadingSkills(false)
@@ -197,7 +201,12 @@ const TodayPage = () => {
         state: { sessionId: payload.session_id },
       })
     } catch (error) {
-      setErrorMessage(error instanceof Error ? error.message : 'Could not start session.')
+      let msg = error instanceof Error ? error.message : 'Could not start session.'
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        msg =
+          'You appear to be offline. Connect to the internet before starting a session.'
+      }
+      setErrorMessage(msg)
     } finally {
       setIsStartingSession(false)
     }
@@ -205,7 +214,7 @@ const TodayPage = () => {
 
   return (
     <section className="session-hero">
-      <div className="hero-left">
+      <div className="hero-left learner-text-scope">
         <div className="hero-meta">Today</div>
         <h1 className="hero-greeting">
           Hi, <em>Brielle.</em>
@@ -225,7 +234,9 @@ const TodayPage = () => {
         />
 
         {isLoadingSkills ? (
-          <div className="card-surface">Loading today&apos;s skills…</div>
+          <div className="card-surface" role="status">
+            Gathering your plan for today…
+          </div>
         ) : null}
 
         {!isLoadingSkills && errorMessage ? <div className="card-surface">{errorMessage}</div> : null}

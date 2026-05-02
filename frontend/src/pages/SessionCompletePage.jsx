@@ -152,7 +152,7 @@ const SessionCompletePage = () => {
 
   return (
     <section className="session-complete-section">
-      <div className="session-complete-card">
+      <div className="session-complete-card learner-text-scope">
         <h1>Session complete!</h1>
         <p className="accuracy-line">
           {itemsCorrect} correct out of {itemsAttempted} ·{' '}

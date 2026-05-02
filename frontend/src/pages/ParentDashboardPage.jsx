@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
 import {
   Bar,
   BarChart,
@@ -96,7 +97,12 @@ const ParentDashboardPage = () => {
         setStudentId(data.student_id)
       }
     } catch (err) {
-      setErrorMessage(err instanceof Error ? err.message : 'Could not load dashboard.')
+      let msg = err instanceof Error ? err.message : 'Could not load dashboard.'
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        msg =
+          'You appear to be offline. Connect to the internet, then reload the parent dashboard.'
+      }
+      setErrorMessage(msg)
       setPayload(null)
     } finally {
       setIsLoading(false)
@@ -357,9 +363,17 @@ const ParentDashboardPage = () => {
         <div className="dash-agent-feed">
           <div className="dash-section-title">Agent activity</div>
           <p className="dash-feed-note">
-            Placeholder until Task 12 — approve/revert controls will connect to live agent runs.
+            Recent runs for this week (UTC).{' '}
+            <Link className="dash-feed-link" to="/parent/agents">
+              Open full log &amp; approvals
+            </Link>
           </p>
           <ul className="dash-feed-list">
+            {(payload?.agent_activity ?? []).length === 0 ? (
+              <li className="dash-feed-item muted">
+                <span className="dash-feed-text">No agent runs recorded this week yet.</span>
+              </li>
+            ) : null}
             {(payload?.agent_activity ?? []).map((item) => (
               <li key={item.id} className="dash-feed-item">
                 <span className="dash-feed-agent">{item.agent_name}</span>

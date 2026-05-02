@@ -13,9 +13,10 @@ import sessionsRouter from "./src/routes/sessions.js";
 import itemsRouter from "./src/routes/items.js";
 import aiRouter from "./src/routes/ai.js";
 import dashboardRouter from "./src/routes/dashboard.js";
-import agentsRouter from "./src/routes/agents.js";
+import agentsRouter, { scheduleAgentCronJobs } from "./src/routes/agents.js";
 import exportRouter from "./src/routes/export.js";
 import settingsRouter from "./src/routes/settings.js";
+import studentProfileRouter from "./src/routes/student-profile.js";
 import parentRouter from "./src/routes/parent.js";
 
 const app = express();
@@ -54,6 +55,7 @@ app.use("/api/dashboard", dashboardRouter);
 app.use("/api/agents", agentsRouter);
 app.use("/api/export", exportRouter);
 app.use("/api/settings", settingsRouter);
+app.use("/api/settings", studentProfileRouter);
 app.use("/api/parent", parentRouter);
 
 app.use((error, _req, res, _next) => {
@@ -66,4 +68,7 @@ app.use((error, _req, res, _next) => {
 
 app.listen(port, () => {
   console.log(`Backend listening on http://localhost:${port}`);
+  const agentFlag = process.env.AGENT_SYSTEM_ENABLED ?? "true";
+  console.log(`AGENT_SYSTEM_ENABLED=${agentFlag}`);
+  scheduleAgentCronJobs();
 });

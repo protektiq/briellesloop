@@ -9,8 +9,7 @@ import {
   useSpellingSpeech,
   useTypingLiveStats,
 } from '../components/practice/PracticeSkillViews.jsx'
-
-const API_BASE_URL = 'http://localhost:3001'
+import { API_BASE_URL } from '../constants/api'
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
@@ -173,14 +172,26 @@ const PracticePage = () => {
           return
         }
 
+        if (normalizedQueue.length === 0) {
+          setErrorMessage(
+            'No practice problems were ready. Check your connection or start again from Today.',
+          )
+          setQueue([])
+          setCurrentIndex(0)
+          return
+        }
+
         setQueue(normalizedQueue)
         setCurrentIndex(0)
       } catch (error) {
         if (!isMounted) {
           return
         }
-        const message =
-          error instanceof Error ? error.message : 'Could not load queue.'
+        let message = error instanceof Error ? error.message : 'Could not load queue.'
+        if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+          message =
+            'You appear to be offline. Connect to the internet, then try loading again from Today.'
+        }
         setErrorMessage(message)
       } finally {
         if (isMounted) {
@@ -385,7 +396,11 @@ const PracticePage = () => {
         setBreakOfferReason('auto_two_wrong')
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Could not submit attempt.'
+      let message = error instanceof Error ? error.message : 'Could not submit attempt.'
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        message =
+          'You appear to be offline. Reconnect, then try checking your answer again.'
+      }
       setCoachState({
         tone: 'error',
         label: 'Hmm, retry',
@@ -538,7 +553,7 @@ const PracticePage = () => {
   const renderSkillBody = () => {
     if (!currentItem || isLoadingQueue) {
       return (
-        <div className="activity-question">Picking the first question for you…</div>
+        <div className="activity-question">Picking your problems…</div>
       )
     }
 
@@ -650,33 +665,34 @@ const PracticePage = () => {
             <div style={{ width: `${progressPercent}%` }} />
           </div>
 
-          {renderSkillBody()}
+          <div className="learner-text-scope">
+            {renderSkillBody()}
 
-          <div className="btn-row">
-            <button
-              type="button"
-              className="btn btn-secondary"
-              onClick={safeSkillName === 'spelling' ? speakSpellingWord : handleHint}
-              disabled={!currentItem || isBusy || (safeSkillName === 'spelling' ? false : !hintEligible)}
-            >
-              {safeSkillName === 'spelling'
-                ? 'Hear again'
-                : isLoadingHint
-                  ? 'Thinking…'
-                  : 'Hint'}
-            </button>
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={handleSubmitAttempt}
-              disabled={!currentItem || isBusy || answer.trim().length === 0}
-            >
-              {isSubmitting ? 'Checking…' : 'Check my answer →'}
-            </button>
-          </div>
+            <div className="btn-row">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={safeSkillName === 'spelling' ? speakSpellingWord : handleHint}
+                disabled={!currentItem || isBusy || (safeSkillName === 'spelling' ? false : !hintEligible)}
+              >
+                {safeSkillName === 'spelling'
+                  ? 'Hear again'
+                  : isLoadingHint
+                    ? 'Finding a hint…'
+                    : 'Hint'}
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={handleSubmitAttempt}
+                disabled={!currentItem || isBusy || answer.trim().length === 0}
+              >
+                {isSubmitting ? 'Checking your answer…' : 'Check my answer →'}
+              </button>
+            </div>
 
-          <div className="stuck-row">
-            <span>Brain feeling foggy?</span>
+            <div className="stuck-row">
+              <span>Brain feeling foggy?</span>
             <button
               type="button"
               className="stuck-btn"
@@ -688,9 +704,11 @@ const PracticePage = () => {
                 : 'Replay word'}
             </button>
           </div>
+          </div>
         </div>
 
         <aside className="activity-sidebar">
+          <div className="learner-text-scope">
           <div className={coachClassName}>
             <div className="label">{coachState.label}</div>
             <h4>{coachState.title}</h4>
@@ -716,6 +734,7 @@ const PracticePage = () => {
               Take a brain break
             </button>
           </div>
+          </div>
 
           <div className="session-progress">
             <h5>Today&apos;s session</h5>
@@ -726,7 +745,7 @@ const PracticePage = () => {
       {breakOfferReason ? (
         <div className="modal-backdrop" role="presentation">
           <div
-            className="break-offer-modal"
+            className="break-offer-modal learner-text-scope"
             role="dialog"
             aria-modal="true"
             aria-label="Take a quick brain break"

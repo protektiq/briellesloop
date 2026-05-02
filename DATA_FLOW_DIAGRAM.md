@@ -27,13 +27,21 @@ flowchart TD
   itemsTbl --> attemptsTbl
   studentsTbl --> weeklyInsightsTbl[weekly_insights]
 
-  agentsTbl[agents] --> agentRunsTbl[agent_runs]
+  cronScheduler[nodeCronSchedule] --> agentsApi
+  cronScheduler --> agentRunners[agentConversationRunner]
+  agentRunners --> anthropicApi[AnthropicMessagesAPI]
+  anthropicApi --> agentRunsTbl[agent_runs]
+  agentsTbl[agents] --> agentRunsTbl
   agentRunsTbl --> agentActionsTbl[agent_actions]
   studentsTbl --> studentTuningTbl[student_tuning]
   agentsTbl --> studentTuningTbl
   agentActionsTbl --> studentTuningTbl
   agentActionsTbl --> sessionsTbl
   agentActionsTbl --> studentSkillLevelsTbl
+  agentActionsTbl --> queueCacheTbl[next_session_queue]
+  agentActionsTbl --> weeklyInsightsTbl[weekly_insights]
+  agentActionsTbl --> iepConcernTbl[iep_concern_flags]
+  itemsApi --> queueCacheTbl
   sessionApi --> sessionsTbl
   itemsApi --> itemsTbl
   itemsApi --> attemptsTbl
@@ -51,10 +59,12 @@ flowchart TD
 ## Notes
 
 - Core learning flow: `students` + `skills` drive session queueing, attempts, and item mastery updates.
-- Agent flow: `agents` create `agent_runs`, write `agent_actions`, and adjust `student_tuning` that influences future sessions.
+- Agent flow: **node-cron** (when `AGENT_SYSTEM_ENABLED` is not `false`) schedules runs per `agents.schedule_cron` and `agents.enabled`. Each run calls **Anthropic Messages** with tool-use; results go to `agent_runs` / `agent_actions`. Writes target `student_tuning`, `next_session_queue`, `weekly_insights`, and `iep_concern_flags`. Parent UI (`/parent`, `/parent/agents`) and `PATCH /api/agents/:name/enabled` control visibility and scheduling.
 - Weekly summaries are persisted in `weekly_insights` for parent review and IEP reporting.
 - API layer now includes SRS-driven queue building and mastery updates in `/api/items/*`.
 - **Parent PIN:** `parent_settings.parent_pin_hash` (bcrypt). `GET /api/settings/parent-pin`, `POST /api/settings/parent-pin`. Unlock: `POST /api/parent/verify-pin`. Frontend keeps an unlocked flag in `sessionStorage` for `/parent/*`.
+- **Phase 6 learner profile & onboarding:** `GET/PATCH /api/settings/profile` reads/writes `students.interests`, `skills.iep_goal_text`, `student_skill_levels.level`, and `student_tuning.session_item_count`. `POST /api/settings/onboarding/complete` sets `parent_settings.onboarding_completed_at`. The `/onboarding` route (outside `Layout`) collects interests, PIN, and session length before redirecting to `/`. Layout redirects incomplete onboarding to `/onboarding` except for `/settings`.
+- **Monthly API spend:** `GET /api/agents/cost-summary` sums `agent_runs.cost_usd` and `ai_generations.cost_usd` for a calendar month (optional `?month=YYYY-MM`). Rendered on `/parent/agents`.
 - **Parent dashboard data:** `GET /api/dashboard/week` aggregates `sessions`, `brain_breaks`, `skills`, `weekly_insights` (UTC Monday week windows).
 - **IEP PDF:** `GET /api/export/iep-pdf` builds an A4 `pdf-lib` report (12-week tables + snapshots).
 
@@ -63,6 +73,7 @@ flowchart TD
 ```mermaid
 flowchart TD
   browser[Browser] --> reactRouter[ReactRouter]
+  reactRouter --> onboardingRoute[OnboardingPage route /onboarding]
   reactRouter --> layout[Layout]
   layout --> topNav[TopNav]
   layout --> routeOutlet[RouteOutlet]
