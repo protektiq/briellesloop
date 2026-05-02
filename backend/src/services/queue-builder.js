@@ -179,6 +179,10 @@ const queryNewPool = async (studentId, skillId, limit) => {
        AND im.student_id = $1
       WHERE i.skill_id = $2
         AND (im.item_id IS NULL OR im.tier = 0)
+        AND NOT (
+          i.item_type = 'writing_prompt'
+          AND COALESCE(i.metadata ->> 'kind', '') = 'template'
+        )
       ORDER BY
         CASE
           WHEN i.metadata ->> 'seed_source' = '006_item_seed' THEN 1

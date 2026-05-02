@@ -56,6 +56,7 @@ app.use("/api/agents", agentsRouter);
 app.use("/api/export", exportRouter);
 app.use("/api/settings", settingsRouter);
 app.use("/api/settings", studentProfileRouter);
+app.use("/api/student", studentProfileRouter);
 app.use("/api/parent", parentRouter);
 
 app.use((error, _req, res, _next) => {

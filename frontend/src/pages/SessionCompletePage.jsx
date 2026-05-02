@@ -149,6 +149,12 @@ const SessionCompletePage = () => {
   const itemsCorrect = Number(summary?.items_correct ?? 0)
   const elapsedSeconds = Number(summary?.elapsed_seconds ?? 0)
   const tierChanges = Array.isArray(summary?.tier_changes) ? summary.tier_changes : []
+  const writingRubric =
+    summary?.writing_rubric && typeof summary.writing_rubric === 'object'
+      ? summary.writing_rubric
+      : null
+  const writingEncouragement =
+    typeof summary?.writing_encouragement === 'string' ? summary.writing_encouragement : ''
 
   return (
     <section className="session-complete-section">
@@ -181,6 +187,37 @@ const SessionCompletePage = () => {
             </ul>
           )}
         </div>
+
+        {skillName === 'writing' && writingRubric ? (
+          <div>
+            <h2 style={{ fontFamily: 'var(--display)', fontSize: '18px', marginBottom: '12px' }}>
+              Writing rubric
+            </h2>
+            <ul className="tier-list">
+              <li>
+                <span className="tier-pill">Conventions</span>
+                <span>{Number(writingRubric.criteria?.conventions ?? 0)}/25</span>
+              </li>
+              <li>
+                <span className="tier-pill">Sentence Variety</span>
+                <span>{Number(writingRubric.criteria?.sentence_variety ?? 0)}/25</span>
+              </li>
+              <li>
+                <span className="tier-pill">Main Idea</span>
+                <span>{Number(writingRubric.criteria?.main_idea ?? 0)}/25</span>
+              </li>
+              <li>
+                <span className="tier-pill">Detail</span>
+                <span>{Number(writingRubric.criteria?.detail ?? 0)}/25</span>
+              </li>
+              <li>
+                <span className="tier-pill">Total</span>
+                <span>{Number(writingRubric.total ?? 0)}/100</span>
+              </li>
+            </ul>
+            {writingEncouragement ? <p className="tier-empty">{writingEncouragement}</p> : null}
+          </div>
+        ) : null}
 
         <div className="post-checkout-block">
           <h2>How are you feeling now?</h2>

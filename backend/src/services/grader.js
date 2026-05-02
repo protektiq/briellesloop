@@ -12,15 +12,18 @@ const GRADER_PROMPT_PATH = path.resolve(__dirname, "..", "prompts", "math-grader
 const HINT_PROMPT_PATH = path.resolve(__dirname, "..", "prompts", "math-hint.md");
 const READING_GRADER_PROMPT_PATH = path.resolve(__dirname, "..", "prompts", "reading-grader.md");
 const READING_HINT_PROMPT_PATH = path.resolve(__dirname, "..", "prompts", "reading-hint.md");
+const WRITING_GRADER_PROMPT_PATH = path.resolve(__dirname, "..", "prompts", "writing-grader.md");
 
 const GRADER_PURPOSE = "math_grade";
 const HINT_PURPOSE = "math_hint";
 const READING_GRADER_PURPOSE = "reading_grade";
 const READING_HINT_PURPOSE = "reading_hint";
+const WRITING_GRADER_PURPOSE = "writing_grade";
 
 const GRADER_MAX_TOKENS = 400;
 const HINT_MAX_TOKENS = 400;
 const READING_GRADER_MAX_TOKENS = 500;
+const WRITING_GRADER_MAX_TOKENS = 700;
 
 const FEEDBACK_MAX_LEN = 280;
 const EXPLANATION_MAX_LEN = 280;
@@ -31,6 +34,7 @@ const RESPONSE_TIME_MIN = 0;
 const RESPONSE_TIME_MAX = 600;
 
 const TYPING_ACCURACY_THRESHOLD = 0.8;
+const WRITING_RESPONSE_MAX_LEN = 4_000;
 
 const promptCache = new Map();
 
@@ -474,6 +478,138 @@ const gradeTypingLocal = (item, studentResponse, responseSeconds) => {
   };
 };
 
+const sanitizeWritingRendition = (item) => {
+  const renderedPrompt = typeof item.prompt?.text === "string" ? item.prompt.text.trim() : "";
+  if (renderedPrompt.length === 0 || renderedPrompt.length > 800) {
+    throw new Error("Writing prompt text is missing.");
+  }
+  const wordCountGuidance =
+    typeof item.prompt?.word_count_guidance === "string"
+      ? item.prompt.word_count_guidance.trim().slice(0, 160)
+      : "";
+  const rubricCriteria = Array.isArray(item.metadata?.rubric_criteria)
+    ? item.metadata.rubric_criteria
+        .filter((entry) => entry && typeof entry === "object")
+        .map((entry) => ({
+          name: typeof entry.name === "string" ? entry.name.trim().slice(0, 60) : "",
+          description:
+            typeof entry.description === "string" ? entry.description.trim().slice(0, 200) : "",
+          max_points: Number.parseInt(String(entry.max_points), 10),
+        }))
+        .filter((entry) => entry.name.length > 0 && entry.description.length > 0 && entry.max_points > 0)
+        .slice(0, 8)
+    : [];
+  return { renderedPrompt, wordCountGuidance, rubricCriteria };
+};
+
+const sanitizeWritingResponse = (value) => {
+  if (typeof value !== "string") {
+    throw new Error("studentResponse must be a string.");
+  }
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed.length > WRITING_RESPONSE_MAX_LEN) {
+    throw new Error(`studentResponse must be 1-${WRITING_RESPONSE_MAX_LEN} characters.`);
+  }
+  return trimmed;
+};
+
+const validateWritingGraderOutput = (parsed) => {
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("Writing grader output must be an object.");
+  }
+  const total = Number.parseInt(String(parsed.total), 10);
+  if (!Number.isInteger(total) || total < 0 || total > 100) {
+    throw new Error("Writing grader total must be an integer between 0 and 100.");
+  }
+  if (!parsed.criteria || typeof parsed.criteria !== "object") {
+    throw new Error("Writing grader criteria are missing.");
+  }
+  const criteria = {
+    conventions: Number.parseInt(String(parsed.criteria.conventions), 10),
+    sentence_variety: Number.parseInt(String(parsed.criteria.sentence_variety), 10),
+    main_idea: Number.parseInt(String(parsed.criteria.main_idea), 10),
+    detail: Number.parseInt(String(parsed.criteria.detail), 10),
+  };
+  const values = Object.values(criteria);
+  if (!values.every((value) => Number.isInteger(value) && value >= 0 && value <= 25)) {
+    throw new Error("Writing criteria must be integers between 0 and 25.");
+  }
+  const computedTotal = values.reduce((sum, value) => sum + value, 0);
+  const feedback = typeof parsed.feedback === "string" ? parsed.feedback.trim() : "";
+  const encouragement = typeof parsed.encouragement === "string" ? parsed.encouragement.trim() : "";
+  if (feedback.length === 0 || feedback.length > 360) {
+    throw new Error("Writing feedback must be 1-360 characters.");
+  }
+  if (encouragement.length === 0 || encouragement.length > 200) {
+    throw new Error("Writing encouragement must be 1-200 characters.");
+  }
+  return {
+    total: computedTotal,
+    criteria,
+    feedback,
+    encouragement,
+  };
+};
+
+const gradeWritingAttempt = async (item, studentResponse, responseSeconds) => {
+  const cleanSeconds = sanitizeResponseSeconds(responseSeconds);
+  const rendition = sanitizeWritingRendition(item);
+  const cleanResponse = sanitizeWritingResponse(studentResponse);
+  const systemPrompt = await loadPrompt(WRITING_GRADER_PROMPT_PATH, "writing-grader.md");
+  const userMessage = JSON.stringify(
+    {
+      rendered_prompt: rendition.renderedPrompt,
+      word_count_guidance: rendition.wordCountGuidance,
+      rubric_criteria: rendition.rubricCriteria,
+      student_response: cleanResponse,
+      response_time_seconds: cleanSeconds,
+    },
+    null,
+    2,
+  );
+  const inputHash = hashInput(WRITING_GRADER_PURPOSE, systemPrompt, userMessage);
+  const cached = await findCachedGeneration(WRITING_GRADER_PURPOSE, inputHash);
+  if (cached) {
+    try {
+      const validatedCached = validateWritingGraderOutput(cached);
+      return {
+        correct: validatedCached.total >= 70,
+        feedback: validatedCached.feedback,
+        explanation: `Rubric total ${validatedCached.total}/100.`,
+        encouragement: validatedCached.encouragement,
+        writing_rubric: validatedCached,
+        response_time_seconds: cleanSeconds,
+      };
+    } catch {
+      // regenerate
+    }
+  }
+
+  const { parsed, tokensIn, tokensOut } = await callClaude(
+    systemPrompt,
+    userMessage,
+    WRITING_GRADER_MAX_TOKENS,
+  );
+  const validated = validateWritingGraderOutput(parsed);
+  await recordGeneration({
+    purpose: WRITING_GRADER_PURPOSE,
+    inputPrompt: userMessage,
+    inputHash,
+    output: validated,
+    tokensIn,
+    tokensOut,
+  });
+
+  return {
+    correct: validated.total >= 70,
+    feedback: validated.feedback,
+    explanation: `Rubric total ${validated.total}/100.`,
+    encouragement: validated.encouragement,
+    writing_rubric: validated,
+    response_time_seconds: cleanSeconds,
+  };
+};
+
 export const gradeAttempt = async (item, studentResponse, responseSeconds, options = {}) => {
   const skillName = typeof options.skillName === "string" ? options.skillName.trim().toLowerCase() : "math";
 
@@ -485,6 +621,9 @@ export const gradeAttempt = async (item, studentResponse, responseSeconds, optio
   }
   if (skillName === "reading") {
     return gradeReadingAttempt(item, studentResponse, responseSeconds, options.readingQuestionIndex);
+  }
+  if (skillName === "writing") {
+    return gradeWritingAttempt(item, studentResponse, responseSeconds);
   }
   return gradeMathAttempt(item, studentResponse, responseSeconds);
 };

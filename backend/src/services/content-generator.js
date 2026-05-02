@@ -9,8 +9,11 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PROMPT_PATH = path.resolve(__dirname, "..", "prompts", "math-generator.md");
+const WRITING_PROMPT_PATH = path.resolve(__dirname, "..", "prompts", "writing-generator.md");
 const PURPOSE = "math_generate";
+const WRITING_PURPOSE = "writing_generate";
 const MAX_TOKENS = 800;
+const WRITING_MAX_TOKENS = 1_000;
 
 const PROMPT_MAX_LEN = 400;
 const STEP_LABEL_MAX_LEN = 40;
@@ -24,6 +27,7 @@ const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 let cachedSystemPrompt = null;
+let cachedWritingPrompt = null;
 
 const loadSystemPrompt = async () => {
   if (cachedSystemPrompt) {
@@ -35,6 +39,18 @@ const loadSystemPrompt = async () => {
   }
   cachedSystemPrompt = contents;
   return contents;
+};
+
+const loadWritingPrompt = async () => {
+  if (cachedWritingPrompt) {
+    return cachedWritingPrompt;
+  }
+  const contents = await fs.readFile(WRITING_PROMPT_PATH, "utf8");
+  if (typeof contents !== "string" || contents.trim().length < 100) {
+    throw new Error("writing-generator.md prompt is missing or too short.");
+  }
+  cachedWritingPrompt = contents;
+  return cachedWritingPrompt;
 };
 
 const assertString = (value, max, label) => {
@@ -116,7 +132,7 @@ const hashInput = (systemPrompt, userMessage) => {
   return hasher.digest("hex");
 };
 
-const findCachedGeneration = async (inputHash) => {
+const findCachedGeneration = async (purpose, inputHash) => {
   const result = await query(
     `
       SELECT output
@@ -126,12 +142,12 @@ const findCachedGeneration = async (inputHash) => {
       ORDER BY created_at DESC
       LIMIT 1
     `,
-    [PURPOSE, inputHash],
+    [purpose, inputHash],
   );
   return result.rows[0]?.output ?? null;
 };
 
-const recordGeneration = async ({ inputPrompt, inputHash, output, tokensIn, tokensOut }) => {
+const recordGeneration = async ({ purpose, inputPrompt, inputHash, output, tokensIn, tokensOut }) => {
   await query(
     `
       INSERT INTO ai_generations (
@@ -145,7 +161,7 @@ const recordGeneration = async ({ inputPrompt, inputHash, output, tokensIn, toke
       )
       VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)
     `,
-    [PURPOSE, inputPrompt, inputHash, claudeModel, JSON.stringify(output), tokensIn, tokensOut],
+    [purpose, inputPrompt, inputHash, claudeModel, JSON.stringify(output), tokensIn, tokensOut],
   );
 };
 
@@ -282,6 +298,93 @@ const fetchRecentMisses = async (studentId) => {
     .filter((value) => typeof value === "string" && value.trim().length > 0);
 };
 
+const fetchSkillRow = async (skillName) => {
+  const result = await query(
+    `
+      SELECT id, iep_goal_text
+      FROM skills
+      WHERE name = $1
+      LIMIT 1
+    `,
+    [skillName],
+  );
+  if (result.rowCount === 0) {
+    throw new Error(`Skill ${skillName} missing from skills table.`);
+  }
+  return result.rows[0];
+};
+
+const fetchStudentSkillLevel = async (studentId, skillName) => {
+  const result = await query(
+    `
+      SELECT ssl.level
+      FROM student_skill_levels ssl
+      INNER JOIN skills s ON s.id = ssl.skill_id
+      WHERE ssl.student_id = $1
+        AND s.name = $2
+      LIMIT 1
+    `,
+    [studentId, skillName],
+  );
+  const level = Number.parseInt(String(result.rows[0]?.level), 10);
+  if (!Number.isInteger(level) || level < 1 || level > 10) {
+    return 1;
+  }
+  return level;
+};
+
+const fetchWritingSessionItemCount = async (studentId) => {
+  const result = await query(
+    `
+      SELECT current_value
+      FROM student_tuning
+      WHERE student_id = $1::uuid
+        AND parameter_name = ANY($2::text[])
+      ORDER BY CASE WHEN parameter_name = 'session_item_count_writing' THEN 0 ELSE 1 END
+      LIMIT 1
+    `,
+    [studentId, ["session_item_count_writing", "session_item_count"]],
+  );
+  const raw = result.rows[0]?.current_value;
+  const n = Number.parseInt(String(raw ?? "1"), 10);
+  if (Number.isInteger(n) && n >= 1 && n <= 3) {
+    return n;
+  }
+  return 1;
+};
+
+const sanitizeWritingTemplate = (template) => {
+  if (!template || typeof template !== "object") {
+    throw new Error("writing template must be an object.");
+  }
+  const topicTemplate =
+    typeof template.topic_template === "string" ? template.topic_template.trim() : "";
+  if (topicTemplate.length < 8 || topicTemplate.length > 320) {
+    throw new Error("topic_template must be 8-320 characters.");
+  }
+  const minWords = Number.parseInt(String(template.min_words), 10);
+  const maxWords = Number.parseInt(String(template.max_words), 10);
+  if (!Number.isInteger(minWords) || !Number.isInteger(maxWords) || minWords < 20 || maxWords > 200) {
+    throw new Error("min_words/max_words are out of bounds.");
+  }
+  if (minWords > maxWords) {
+    throw new Error("min_words cannot be greater than max_words.");
+  }
+  const rubricFocus = Array.isArray(template.rubric_focus)
+    ? template.rubric_focus
+        .filter((entry) => typeof entry === "string" && entry.trim().length > 0)
+        .map((entry) => entry.trim().toLowerCase().slice(0, 40))
+        .slice(0, 8)
+    : [];
+
+  return {
+    topic_template: topicTemplate,
+    min_words: minWords,
+    max_words: maxWords,
+    rubric_focus: rubricFocus,
+  };
+};
+
 const fetchStudentRow = async (studentId) => {
   const result = await query(
     `
@@ -330,7 +433,7 @@ export const generateMathItem = async (student, options = {}) => {
   const userMessage = buildUserMessage(sanitized, nonce);
   const inputHash = hashInput(systemPrompt, userMessage);
 
-  const cached = await findCachedGeneration(inputHash);
+  const cached = await findCachedGeneration(PURPOSE, inputHash);
   if (cached) {
     try {
       return validateGeneratedItem(cached);
@@ -343,6 +446,7 @@ export const generateMathItem = async (student, options = {}) => {
   const validated = validateGeneratedItem(parsed);
 
   await recordGeneration({
+    purpose: PURPOSE,
     inputPrompt: userMessage,
     inputHash,
     output: validated,
@@ -350,6 +454,144 @@ export const generateMathItem = async (student, options = {}) => {
     tokensOut,
   });
 
+  return validated;
+};
+
+export const buildStudentContextForWriting = async (studentId) => {
+  if (typeof studentId !== "string" || !UUID_REGEX.test(studentId)) {
+    throw new Error("studentId must be a valid UUID.");
+  }
+  const [studentRow, writingSkill, writingLevel, sessionItemCount] = await Promise.all([
+    fetchStudentRow(studentId),
+    fetchSkillRow("writing"),
+    fetchStudentSkillLevel(studentId, "writing"),
+    fetchWritingSessionItemCount(studentId),
+  ]);
+  return {
+    id: studentRow.id,
+    name: typeof studentRow.name === "string" ? studentRow.name.trim().slice(0, 60) : "Brielle",
+    grade: Number.parseInt(String(studentRow.grade), 10),
+    interests: Array.isArray(studentRow.interests) ? studentRow.interests : [],
+    writing_level: writingLevel,
+    iep_goal_text: typeof writingSkill.iep_goal_text === "string" ? writingSkill.iep_goal_text.slice(0, 800) : "",
+    session_item_count: sessionItemCount,
+  };
+};
+
+const validateWritingRendition = (parsed, template) => {
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("Generated writing rendition must be an object.");
+  }
+  assertString(parsed.rendered_prompt, 420, "rendered_prompt");
+  assertString(parsed.word_count_guidance, 120, "word_count_guidance");
+  if (!Array.isArray(parsed.rubric_criteria) || parsed.rubric_criteria.length !== 4) {
+    throw new Error("rubric_criteria must contain 4 entries.");
+  }
+  const allowedNames = new Set(["Conventions", "Sentence Variety", "Main Idea", "Detail"]);
+  const criteria = parsed.rubric_criteria.map((entry, index) => {
+    if (!entry || typeof entry !== "object") {
+      throw new Error(`rubric_criteria[${index}] must be an object.`);
+    }
+    assertString(entry.name, 60, `rubric_criteria[${index}].name`);
+    assertString(entry.description, 200, `rubric_criteria[${index}].description`);
+    const maxPoints = Number.parseInt(String(entry.max_points), 10);
+    if (!Number.isInteger(maxPoints) || maxPoints !== 25) {
+      throw new Error(`rubric_criteria[${index}].max_points must be 25.`);
+    }
+    if (!allowedNames.has(entry.name.trim())) {
+      throw new Error(`rubric_criteria[${index}].name is invalid.`);
+    }
+    return {
+      name: entry.name.trim(),
+      description: entry.description.trim(),
+      max_points: maxPoints,
+    };
+  });
+
+  return {
+    rendered_prompt: parsed.rendered_prompt.trim(),
+    word_count_guidance: parsed.word_count_guidance.trim(),
+    rubric_criteria: criteria,
+    min_words: template.min_words,
+    max_words: template.max_words,
+    rubric_focus: template.rubric_focus,
+    topic_template: template.topic_template,
+  };
+};
+
+export const generateWritingRendition = async (template, student, options = {}) => {
+  const sanitizedTemplate = sanitizeWritingTemplate(template);
+  if (!student || typeof student !== "object") {
+    throw new Error("student must be an object.");
+  }
+  const writingLevel = Number.parseInt(String(student.writing_level), 10);
+  if (!Number.isInteger(writingLevel) || writingLevel < 1 || writingLevel > 10) {
+    throw new Error("student.writing_level must be an integer between 1 and 10.");
+  }
+  const systemPrompt = await loadWritingPrompt();
+  const nonce =
+    typeof options.nonce === "string" && options.nonce.length > 0 && options.nonce.length <= 64
+      ? options.nonce
+      : crypto.randomBytes(8).toString("hex");
+  const userMessage = JSON.stringify(
+    {
+      student_name: typeof student.name === "string" ? student.name.trim().slice(0, 60) : "Brielle",
+      grade: Number.parseInt(String(student.grade), 10),
+      writing_level: writingLevel,
+      interests: Array.isArray(student.interests)
+        ? student.interests
+            .filter((entry) => typeof entry === "string" && entry.trim().length > 0)
+            .map((entry) => entry.trim().slice(0, 40))
+            .slice(0, 8)
+        : [],
+      iep_goal_text: typeof student.iep_goal_text === "string" ? student.iep_goal_text.slice(0, 800) : "",
+      topic_template: sanitizedTemplate.topic_template,
+      min_words: sanitizedTemplate.min_words,
+      max_words: sanitizedTemplate.max_words,
+      rubric_focus: sanitizedTemplate.rubric_focus,
+      nonce,
+    },
+    null,
+    2,
+  );
+  const inputHash = hashInput(systemPrompt, `${WRITING_PURPOSE}\u0000${userMessage}`);
+
+  const cached = await findCachedGeneration(WRITING_PURPOSE, inputHash);
+  if (cached) {
+    try {
+      return validateWritingRendition(cached, sanitizedTemplate);
+    } catch {
+      // regenerate
+    }
+  }
+
+  const response = await claudeClient.messages.create({
+    model: claudeModel,
+    max_tokens: WRITING_MAX_TOKENS,
+    system: systemPrompt,
+    messages: [{ role: "user", content: userMessage }],
+  });
+  const text = extractTextFromResponse(response);
+  const stripped = stripCodeFences(text);
+  let parsed;
+  try {
+    parsed = JSON.parse(stripped);
+  } catch (error) {
+    throw new Error(
+      `Could not parse Claude writing output as JSON: ${
+        error instanceof Error ? error.message : "unknown error"
+      }`,
+    );
+  }
+  const validated = validateWritingRendition(parsed, sanitizedTemplate);
+  await recordGeneration({
+    purpose: WRITING_PURPOSE,
+    inputPrompt: userMessage,
+    inputHash,
+    output: validated,
+    tokensIn: response.usage?.input_tokens ?? null,
+    tokensOut: response.usage?.output_tokens ?? null,
+  });
   return validated;
 };
 
@@ -456,5 +698,141 @@ export const ensureMathQueueItems = async (studentId, mathSkillId, requiredCount
     generated: generated.length,
     eligibleBefore: eligible,
     eligibleAfter: eligible + generated.length,
+  };
+};
+
+const fetchWritingTemplateRows = async (writingSkillId, writingLevel) => {
+  const result = await query(
+    `
+      SELECT id, prompt
+      FROM items
+      WHERE skill_id = $1
+        AND level = $2
+        AND item_type = 'writing_prompt'
+        AND COALESCE(metadata ->> 'kind', '') = 'template'
+      ORDER BY created_at ASC
+    `,
+    [writingSkillId, writingLevel],
+  );
+  return result.rows;
+};
+
+const countQueueEligibleWritingItems = async (studentId, writingSkillId, writingLevel) => {
+  const result = await query(
+    `
+      SELECT COUNT(*)::INT AS eligible_count
+      FROM items i
+      LEFT JOIN item_mastery im
+        ON im.item_id = i.id
+       AND im.student_id = $1
+      WHERE i.skill_id = $2
+        AND i.level = $3
+        AND i.item_type = 'writing_prompt'
+        AND i.ai_generated = TRUE
+        AND COALESCE(i.metadata ->> 'kind', '') = 'rendered'
+        AND (im.tier IS NULL OR im.tier <= 2)
+        AND (im.next_review_at IS NULL OR im.next_review_at <= NOW())
+    `,
+    [studentId, writingSkillId, writingLevel],
+  );
+  return Number(result.rows[0]?.eligible_count ?? 0);
+};
+
+const insertGeneratedWritingItem = async (studentId, writingSkillId, writingLevel, rendition) => {
+  const itemResult = await query(
+    `
+      INSERT INTO items (
+        skill_id,
+        level,
+        item_type,
+        prompt,
+        answer,
+        metadata,
+        ai_generated
+      )
+      VALUES ($1, $2, 'writing_prompt', $3::jsonb, $4::jsonb, $5::jsonb, TRUE)
+      RETURNING id
+    `,
+    [
+      writingSkillId,
+      writingLevel,
+      JSON.stringify({
+        text: rendition.rendered_prompt,
+        min_words: rendition.min_words,
+        max_words: rendition.max_words,
+        word_count_guidance: rendition.word_count_guidance,
+      }),
+      JSON.stringify({ text: "" }),
+      JSON.stringify({
+        kind: "rendered",
+        rubric_criteria: rendition.rubric_criteria,
+        rubric_focus: rendition.rubric_focus,
+        topic_template: rendition.topic_template,
+        generated_at: new Date().toISOString(),
+        source: "writing_generator_v1",
+      }),
+    ],
+  );
+  const itemId = itemResult.rows[0].id;
+  await query(
+    `
+      INSERT INTO item_mastery (
+        student_id,
+        item_id,
+        tier,
+        consecutive_correct,
+        total_attempts,
+        total_correct,
+        next_review_at
+      )
+      VALUES ($1, $2, 0, 0, 0, 0, NOW())
+      ON CONFLICT (student_id, item_id) DO NOTHING
+    `,
+    [studentId, itemId],
+  );
+  return itemId;
+};
+
+export const ensureWritingQueueItems = async (studentId, writingSkillId, requiredCount) => {
+  if (typeof studentId !== "string" || !UUID_REGEX.test(studentId)) {
+    throw new Error("studentId must be a valid UUID.");
+  }
+  if (!Number.isInteger(writingSkillId) || writingSkillId < 1) {
+    throw new Error("writingSkillId must be a positive integer.");
+  }
+  if (!Number.isInteger(requiredCount) || requiredCount < 1 || requiredCount > 5) {
+    throw new Error("requiredCount must be an integer between 1 and 5.");
+  }
+
+  const studentContext = await buildStudentContextForWriting(studentId);
+  const writingLevel = studentContext.writing_level;
+  const eligible = await countQueueEligibleWritingItems(studentId, writingSkillId, writingLevel);
+  const shortfall = Math.max(0, requiredCount - eligible);
+  if (shortfall === 0) {
+    return { generated: 0, eligibleBefore: eligible, eligibleAfter: eligible };
+  }
+
+  const templateRows = await fetchWritingTemplateRows(writingSkillId, writingLevel);
+  if (templateRows.length === 0) {
+    throw new Error("No writing prompt templates available for the student's level.");
+  }
+
+  const generatedItems = [];
+  for (let index = 0; index < shortfall; index += 1) {
+    const templateRow = templateRows[index % templateRows.length];
+    const templatePrompt = templateRow.prompt && typeof templateRow.prompt === "object" ? templateRow.prompt : {};
+    const nonce = `${Date.now().toString(36)}-${index}-${crypto.randomBytes(4).toString("hex")}`;
+    const rendition = await generateWritingRendition(templatePrompt, studentContext, { nonce });
+    generatedItems.push(rendition);
+  }
+
+  for (const item of generatedItems) {
+    await insertGeneratedWritingItem(studentId, writingSkillId, writingLevel, item);
+  }
+
+  return {
+    generated: generatedItems.length,
+    eligibleBefore: eligible,
+    eligibleAfter: eligible + generatedItems.length,
   };
 };

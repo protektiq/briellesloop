@@ -67,7 +67,8 @@ flowchart TD
 - **Monthly API spend:** `GET /api/agents/cost-summary` sums `agent_runs.cost_usd` and `ai_generations.cost_usd` for a calendar month (optional `?month=YYYY-MM`). Rendered on `/parent/agents`.
 - **Parent dashboard data:** `GET /api/dashboard/week` aggregates `sessions`, `brain_breaks`, `skills`, `weekly_insights` (UTC Monday week windows).
 - **FR-16 skill drop:** On each graded attempt, `/api/items/:id/attempt` computes **UTC calendar week** accuracy per skill; if below `weekly_drop_accuracy` (tuning) with enough attempts, applies **at most one** level decrease per skill per week, updates `student_skill_levels.last_weekly_drop_week_start`, and bumps `item_mastery.next_review_at` for recent misses (14 days).
-- **Practice frustration (FR-5):** `GET /api/session/:id/frustration-context` and `POST /api/session/:id/frustration-eval` read `student_tuning` (`frustration_wrong_threshold`, `frustration_time_threshold`, `frustration_signal:*`) so `PracticePage` uses tuned thresholds and agent-learned signals for brain-break offers.
+- **Writing flow (FR-30..FR-33):** writing uses seeded `writing_prompt` templates, Claude-rendered one-item sessions, rubric grading (`>=70` counts correct), and Tier-3->4 ignores response-time gate.
+- **Practice frustration (FR-5):** `GET /api/session/:id/frustration-context`, `GET /api/student/:studentId/tuning`, and `POST /api/session/:id/frustration-eval` feed `PracticePage` static thresholds plus additive `frustration_signal:*` checks (`evaluateFrustrationSignals`) before brain-break offers.
 - **IEP PDF:** `GET /api/export/iep-pdf` builds an A4 `pdf-lib` report (12-week tables + snapshots).
 
 ## Frontend Route Shell (Design System Foundation)
@@ -123,6 +124,10 @@ flowchart TD
 ```mermaid
 flowchart TD
   practicePage[PracticePage] --> queueApi[GET /api/items/queue/:skill_id?session_id]
+  practicePage --> studentTuningApi[GET /api/student/:studentId/tuning]
+  studentTuningApi --> studentTuningTbl[student_tuning]
+  practicePage --> localSignalEval[evaluateFrustrationSignals]
+  localSignalEval --> breakOffer[setBreakOfferReason]
   queueApi --> sessionValidation[ValidateActiveSession]
   sessionValidation --> queueBuilder[buildSessionQueue]
   queueBuilder --> cacheCheck[next_session_queue exists]
@@ -138,7 +143,9 @@ flowchart TD
   attemptInsert --> masteryStats[LoadMasteryStatsAndTuning]
   masteryStats --> srsPure[srs.js pure functions]
   srsPure --> masteryUpdate[Update item_mastery]
-  masteryUpdate --> levelDecision[AdvanceOrDrop student_skill_levels]
+  masteryUpdate --> crossItemGuard[checkSkillLevelAdvancement]
+  studentTuningTbl --> crossItemGuard
+  crossItemGuard --> levelDecision[AdvanceOrDrop student_skill_levels if min items met]
   levelDecision --> nextItemResponse[NextItemOrSessionComplete]
 ```
 
@@ -176,11 +183,11 @@ flowchart TD
   sessionEndApi --> sessionsEndedAt[sessions ended_at + items_attempted/correct]
 ```
 
-## Reading, Spelling, and Typing (Task 10)
+## Reading, Spelling, Typing, and Writing
 
 ```mermaid
 flowchart TD
-  practicePage[PracticePage dispatch] --> skillViews[MathReadingSpellingTyping views]
+  practicePage[PracticePage dispatch] --> skillViews[MathReadingSpellingTypingWriting views]
 
   queueRead[GET queue reading] --> ensureRead[ensureReadingQueueItems]
   ensureRead --> genRead[skills-queue.generateReadingItem]
@@ -201,6 +208,13 @@ flowchart TD
 
   attemptSpell[POST attempt spelling] --> gradeSpell[grader local string match]
   attemptType[POST attempt typing] --> gradeType[grader local accuracy + WPM]
+  queueWrite[GET queue writing] --> ensureWrite[ensureWritingQueueItems]
+  ensureWrite --> templateSeed[items writing_prompt templates]
+  ensureWrite --> renderWrite[content-generator generateWritingRendition]
+  renderWrite --> claudeWrite[Claude writing-generator]
+  renderWrite --> itemsWrite[items writing_prompt rendered]
+  attemptWrite[POST attempt writing] --> gradeWrite[grader Claude writing_grade]
+  gradeWrite --> rubricOut[criteria conventions sentence_variety main_idea detail]
 
   hintRead[POST /api/ai/hint reading] --> hintReadSvc[generateReadingHint Claude]
   hintSpell[spelling TTS] --> speechSynth[browser SpeechSynthesis]

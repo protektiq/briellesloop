@@ -11,6 +11,8 @@ const MIN_LEVEL = 1;
 const MAX_LEVEL = 10;
 const MIN_SESSION_ITEMS = 3;
 const MAX_SESSION_ITEMS = 10;
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const parseStudentIdQuery = (queryValue) => {
   if (typeof queryValue !== "string" || queryValue.trim().length === 0) {
@@ -98,6 +100,14 @@ const clampSessionItemCount = (raw) => {
     return null;
   }
   return n;
+};
+
+const parseUuidParam = (value) => {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  return UUID_REGEX.test(trimmed) ? trimmed : null;
 };
 
 router.get("/profile", async (req, res, next) => {
@@ -319,6 +329,38 @@ router.post("/onboarding/complete", async (req, res, next) => {
       ok: true,
       student_id: studentId,
       onboarding_completed_at: new Date().toISOString(),
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.get("/:studentId/tuning", async (req, res, next) => {
+  try {
+    const studentId = parseUuidParam(req.params.studentId);
+    if (!studentId) {
+      return res.status(400).json({
+        error: "Invalid student id.",
+        field: "studentId must be a valid UUID.",
+      });
+    }
+
+    const tuningResult = await query(
+      `
+        SELECT parameter_name, current_value
+        FROM student_tuning
+        WHERE student_id = $1::uuid
+        ORDER BY parameter_name ASC
+      `,
+      [studentId],
+    );
+
+    return res.json({
+      student_id: studentId,
+      tuning: tuningResult.rows.map((row) => ({
+        parameter_name: row.parameter_name,
+        current_value: Number(row.current_value),
+      })),
     });
   } catch (error) {
     return next(error);

@@ -381,6 +381,7 @@ router.get("/:id/frustration-context", async (req, res, next) => {
     const tuning = await fetchFrustrationTuning(sessionRow.student_id);
     return res.json({
       session_id: sessionId,
+      student_id: sessionRow.student_id,
       frustration_wrong_threshold: tuning.frustrationWrongThreshold,
       frustration_time_threshold_seconds: tuning.frustrationTimeThreshold,
       signals: tuning.signals.map((s) => ({

@@ -139,6 +139,25 @@ const ParentDashboardPage = () => {
     }))
   }, [payload])
 
+  const orderedSkillAccuracy = useMemo(() => {
+    const canonicalOrder = ['math', 'reading', 'spelling', 'typing', 'writing']
+    const sourceRows = Array.isArray(payload?.skill_accuracy) ? payload.skill_accuracy : []
+    const byName = new Map()
+    for (const row of sourceRows) {
+      if (!row || typeof row !== 'object' || typeof row.skill_name !== 'string') {
+        continue
+      }
+      byName.set(row.skill_name.toLowerCase(), row)
+    }
+    return canonicalOrder.map((skillName) => {
+      const row = byName.get(skillName)
+      if (row) {
+        return row
+      }
+      return { skill_name: skillName, accuracy: null, iep_target_pct: 80 }
+    })
+  }, [payload])
+
   const weeklyStats = payload?.weekly_stats
   const cur = weeklyStats?.current
   const deltas = weeklyStats?.deltas
@@ -287,7 +306,7 @@ const ParentDashboardPage = () => {
         <div className="dash-grid">
           <div>
             <div className="dash-section-title">Skills · Weekly Accuracy</div>
-            {(payload?.skill_accuracy ?? []).map((row) => {
+            {orderedSkillAccuracy.map((row) => {
               const pct =
                 row.accuracy === null || row.accuracy === undefined
                   ? 0

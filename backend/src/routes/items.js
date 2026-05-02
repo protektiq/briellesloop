@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { buildSessionQueue } from "../services/queue-builder.js";
-import { ensureMathQueueItems } from "../services/content-generator.js";
+import { ensureMathQueueItems, ensureWritingQueueItems } from "../services/content-generator.js";
 import {
   ensureReadingQueueItems,
   ensureSpellingQueueItems,
@@ -10,8 +10,8 @@ import { gradeAttempt } from "../services/grader.js";
 import {
   calculateNextReviewAt,
   calculateNextTier,
+  checkSkillLevelAdvancement,
   MIN_WEEKLY_ATTEMPTS_FOR_LEVEL_DROP,
-  shouldAdvanceSkillLevel,
   shouldDropSkillLevel,
 } from "../services/srs.js";
 import {
@@ -38,6 +38,14 @@ const clampInteger = (value, min, max, fallback) => {
     return fallback;
   }
   return Math.min(max, Math.max(min, parsed));
+};
+
+const getSessionItemCountForSkill = (tuning, skillName) => {
+  const normalized = typeof skillName === "string" ? skillName.trim().toLowerCase() : "";
+  if (normalized === "writing") {
+    return clampInteger(tuning.session_item_count_writing, 1, 3, 1);
+  }
+  return clampInteger(tuning.session_item_count, 3, 10, 5);
 };
 
 const fetchSessionContext = async (sessionId) => {
@@ -75,7 +83,9 @@ const fetchStudentTuning = async (studentId) => {
         "tier_advance_accuracy",
         "tier_advance_response_time",
         "session_item_count",
+        "session_item_count_writing",
         "weekly_drop_accuracy",
+        "tier_advance_min_items",
       ],
     ],
   );
@@ -128,7 +138,7 @@ router.get("/queue/:skill_id", async (req, res, next) => {
     }
 
     const tuning = await fetchStudentTuning(sessionContext.student_id);
-    const requestedCount = clampInteger(tuning.session_item_count, 3, 10, 5);
+    const requestedCount = getSessionItemCountForSkill(tuning, sessionContext.skill_name);
 
     if (sessionContext.skill_name === "math") {
       await ensureMathQueueItems(
@@ -153,6 +163,13 @@ router.get("/queue/:skill_id", async (req, res, next) => {
     }
     if (sessionContext.skill_name === "spelling") {
       await ensureSpellingQueueItems(
+        sessionContext.student_id,
+        sessionContext.skill_id,
+        requestedCount,
+      );
+    }
+    if (sessionContext.skill_name === "writing") {
+      await ensureWritingQueueItems(
         sessionContext.student_id,
         sessionContext.skill_id,
         requestedCount,
@@ -190,11 +207,11 @@ router.post("/:id/attempt", async (req, res, next) => {
       });
     }
 
-    if (!isNonEmptyString(answer, 1_000)) {
+    if (!isNonEmptyString(answer, 3_000)) {
       return res.status(400).json({
         error: "Invalid attempt payload.",
         fields: {
-          answer: "Required non-empty string up to 1000 chars.",
+          answer: "Required non-empty string up to 3000 chars.",
         },
       });
     }
@@ -293,6 +310,15 @@ router.post("/:id/attempt", async (req, res, next) => {
       });
     }
 
+    const writingRubric =
+      itemRow.skill_name === "writing" &&
+      gradedResult &&
+      typeof gradedResult === "object" &&
+      gradedResult.writing_rubric &&
+      typeof gradedResult.writing_rubric === "object"
+        ? gradedResult.writing_rubric
+        : null;
+
     const isCorrect = gradedResult.correct;
     const tuning = await fetchStudentTuning(sessionContext.student_id);
     client = await getClient();
@@ -358,7 +384,15 @@ router.post("/:id/attempt", async (req, res, next) => {
       parsedResponseSeconds,
       masteryStats,
       tuning,
+      itemRow.skill_name ?? sessionContext.skill_name,
     );
+
+    const attemptUserResponse =
+      itemRow.item_type === "reading_passage" && readingQuestionIndexParsed !== null
+        ? { answer: answer.trim(), reading_question_index: readingQuestionIndexParsed }
+        : writingRubric
+          ? { answer: answer.trim(), writing_rubric: writingRubric }
+          : { answer: answer.trim() };
 
     const attemptInsertResult = await client.query(
       `
@@ -371,16 +405,12 @@ router.post("/:id/attempt", async (req, res, next) => {
           ai_feedback
         )
         VALUES ($1, $2, $3::jsonb, $4, $5, $6)
-        RETURNING id, attempted_at
+        RETURNING id, attempted_at, user_response
       `,
       [
         sessionContext.id,
         id.trim(),
-        JSON.stringify(
-          itemRow.item_type === "reading_passage" && readingQuestionIndexParsed !== null
-            ? { answer: answer.trim(), reading_question_index: readingQuestionIndexParsed }
-            : { answer: answer.trim() },
-        ),
+        JSON.stringify(attemptUserResponse),
         isCorrect,
         parsedResponseSeconds,
         gradedResult.feedback,
@@ -435,29 +465,49 @@ router.post("/:id/attempt", async (req, res, next) => {
       ],
     );
 
-    const recentTier3AttemptsResult = await client.query(
+    const skillItemMasteryResult = await client.query(
       `
         SELECT
           im.tier,
-          a.is_correct,
-          a.response_time_seconds
-        FROM attempts a
-        INNER JOIN sessions s
-          ON s.id = a.session_id
-        INNER JOIN item_mastery im
-          ON im.item_id = a.item_id
-         AND im.student_id = s.student_id
+          im.total_correct,
+          im.total_attempts,
+          im.avg_response_time_seconds
+        FROM item_mastery im
         INNER JOIN items i
-          ON i.id = a.item_id
-        WHERE s.student_id = $1
+          ON i.id = im.item_id
+        WHERE im.student_id = $1
           AND i.skill_id = $2
-        ORDER BY a.attempted_at DESC
-        LIMIT 100
       `,
       [sessionContext.student_id, sessionContext.skill_id],
     );
 
-    const shouldAdvance = shouldAdvanceSkillLevel(recentTier3AttemptsResult.rows, tuning);
+    const advancementDecision = checkSkillLevelAdvancement(
+      skillItemMasteryResult.rows,
+      tuning,
+    );
+    const tunedMinItems = Number.parseInt(
+      String(tuning.tier_advance_min_items ?? 10),
+      10,
+    );
+    const minItems = Number.isInteger(tunedMinItems) ? tunedMinItems : 10;
+    const shouldAdvance =
+      advancementDecision.shouldAdvance &&
+      advancementDecision.eligibleCount >= minItems;
+
+    console.debug(
+      "[SRS] Skill-level advancement decision",
+      {
+        studentId: sessionContext.student_id,
+        skillId: sessionContext.skill_id,
+        shouldAdvance,
+        eligibleCount: advancementDecision.eligibleCount,
+        avgAccuracy: advancementDecision.avgAccuracy,
+        avgResponseTime: advancementDecision.avgResponseTime,
+        tierAdvanceMinItems: minItems,
+        tierAdvanceAccuracy: Number(tuning.tier_advance_accuracy ?? 80),
+        tierAdvanceResponseTime: Number(tuning.tier_advance_response_time ?? 30),
+      },
+    );
 
     const weekMonday = utcMondayOfContainingWeek();
     const currentWeekMondayStr = formatUtcDateString(weekMonday);
@@ -600,7 +650,7 @@ router.post("/:id/attempt", async (req, res, next) => {
       [sessionContext.id],
     );
     const sessionAttemptCount = Number(sessionAttemptCountResult.rows[0]?.attempt_count ?? 0);
-    const sessionTargetCount = clampInteger(tuning.session_item_count, 3, 10, 5);
+    const sessionTargetCount = getSessionItemCountForSkill(tuning, sessionContext.skill_name);
     // Reading uses three attempts per queued passage (one per comprehension question).
     const effectiveSessionTarget =
       sessionContext.skill_name === "reading" ? sessionTargetCount * 3 : sessionTargetCount;
@@ -623,8 +673,10 @@ router.post("/:id/attempt", async (req, res, next) => {
       is_correct: isCorrect,
       response_seconds: parsedResponseSeconds,
       recorded_at: attemptedAt,
+      user_response: attemptInsertResult.rows[0].user_response,
       feedback: gradedResult.feedback,
       explanation: gradedResult.explanation,
+      ...(writingRubric ? { writing_rubric: writingRubric, encouragement: gradedResult.encouragement } : {}),
       mastery: {
         prior_tier: priorTier,
         next_tier: nextTier,

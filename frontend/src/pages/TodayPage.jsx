@@ -10,6 +10,7 @@ const SKILL_ICON_BY_NAME = {
   math: '🔢',
   spelling: '✏️',
   typing: '⌨️',
+  writing: '📝',
 }
 
 const clampNumber = (value, min, max, fallback) => {

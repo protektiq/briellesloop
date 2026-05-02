@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  checkSkillLevelAdvancement,
   calculateNextReviewAt,
   calculateNextTier,
   shouldAdvanceSkillLevel,
@@ -9,6 +10,7 @@ import {
 const defaultTuning = {
   tier_advance_accuracy: 80,
   tier_advance_response_time: 30,
+  tier_advance_min_items: 10,
   weekly_drop_accuracy: 60,
 };
 
@@ -140,5 +142,56 @@ describe("skill-level rules", () => {
   it("drops when weekly accuracy is below tuned threshold", () => {
     expect(shouldDropSkillLevel(59.99, defaultTuning)).toBe(true);
     expect(shouldDropSkillLevel(60, defaultTuning)).toBe(false);
+  });
+});
+
+describe("checkSkillLevelAdvancement", () => {
+  it("returns shouldAdvance false when eligible Tier-3 item count is below 10", () => {
+    const itemMasteryRows = Array.from({ length: 5 }, () => ({
+      tier: 3,
+      total_correct: 8,
+      total_attempts: 10,
+      avg_response_time_seconds: 25,
+    }));
+
+    const result = checkSkillLevelAdvancement(itemMasteryRows, defaultTuning);
+    expect(result.eligibleCount).toBe(5);
+    expect(result.shouldAdvance).toBe(false);
+  });
+
+  it("returns shouldAdvance true when item count and thresholds are satisfied", () => {
+    const itemMasteryRows = Array.from({ length: 10 }, () => ({
+      tier: 3,
+      total_correct: 8,
+      total_attempts: 10,
+      avg_response_time_seconds: 20,
+    }));
+
+    const result = checkSkillLevelAdvancement(itemMasteryRows, defaultTuning);
+    expect(result.eligibleCount).toBe(10);
+    expect(result.avgAccuracy).toBe(80);
+    expect(result.avgResponseTime).toBe(20);
+    expect(result.shouldAdvance).toBe(true);
+  });
+
+  it("respects tuning overrides for min items and thresholds", () => {
+    const itemMasteryRows = Array.from({ length: 8 }, () => ({
+      tier: 3,
+      total_correct: 7,
+      total_attempts: 10,
+      avg_response_time_seconds: 24,
+    }));
+
+    const result = checkSkillLevelAdvancement(itemMasteryRows, {
+      ...defaultTuning,
+      tier_advance_accuracy: 70,
+      tier_advance_response_time: 25,
+      tier_advance_min_items: 8,
+    });
+
+    expect(result.eligibleCount).toBe(8);
+    expect(result.avgAccuracy).toBe(70);
+    expect(result.avgResponseTime).toBe(24);
+    expect(result.shouldAdvance).toBe(true);
   });
 });

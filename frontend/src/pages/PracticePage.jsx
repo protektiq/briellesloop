@@ -5,6 +5,7 @@ import {
   ReadingSkillView,
   SpellingSkillView,
   TypingSkillView,
+  WritingSkillView,
   poolDisplayName,
   useSpellingSpeech,
   useTypingLiveStats,
@@ -42,7 +43,99 @@ const skillDisplayLabel = (skill) => {
   if (skill === 'typing') {
     return 'Typing · Sentence'
   }
+  if (skill === 'writing') {
+    return 'Writing · Paragraph'
+  }
   return 'Practice'
+}
+
+const parseFiniteNumber = (value) => {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+const countWords = (text) => {
+  if (typeof text !== 'string') {
+    return 0
+  }
+  const trimmed = text.trim()
+  if (!trimmed) {
+    return 0
+  }
+  return trimmed.split(/\s+/).filter((entry) => entry.length > 0).length
+}
+
+const normalizeFrustrationTuningRows = (value) => {
+  if (!Array.isArray(value)) {
+    return []
+  }
+  return value
+    .filter((row) => row && typeof row === 'object')
+    .map((row) => ({
+      parameter_name:
+        typeof row.parameter_name === 'string' ? row.parameter_name.trim() : '',
+      current_value: parseFiniteNumber(row.current_value),
+    }))
+    .filter((row) => row.parameter_name.length > 0 && row.current_value !== null)
+}
+
+const evaluateFrustrationSignals = (tuningRows, sessionState) => {
+  try {
+    if (!Array.isArray(tuningRows) || !sessionState || typeof sessionState !== 'object') {
+      return { shouldOffer: false, reason: null }
+    }
+
+    const consecutiveWrong = parseFiniteNumber(sessionState.consecutiveWrong)
+    const secondsOnCurrentItem = parseFiniteNumber(sessionState.secondsOnCurrentItem)
+    const sessionAttemptCount = parseFiniteNumber(sessionState.sessionAttemptCount)
+
+    if (
+      consecutiveWrong === null ||
+      secondsOnCurrentItem === null ||
+      sessionAttemptCount === null
+    ) {
+      return { shouldOffer: false, reason: null }
+    }
+
+    for (const row of tuningRows) {
+      if (!row.parameter_name.startsWith('frustration_signal:')) {
+        continue
+      }
+      const signalType = row.parameter_name.slice('frustration_signal:'.length).trim().toLowerCase()
+      const threshold = parseFiniteNumber(row.current_value)
+      if (threshold === null) {
+        continue
+      }
+
+      if ((signalType === 'consecutive_wrong' || signalType === 'wrong_streak') && consecutiveWrong >= threshold) {
+        return { shouldOffer: true, reason: 'agent_predicted' }
+      }
+      if (
+        (signalType === 'seconds_on_item' ||
+          signalType === 'slow_item_seconds' ||
+          signalType === 'time_on_item') &&
+        secondsOnCurrentItem >= threshold
+      ) {
+        return { shouldOffer: true, reason: 'agent_predicted' }
+      }
+      if (signalType === 'session_attempts' && sessionAttemptCount >= threshold) {
+        return { shouldOffer: true, reason: 'agent_predicted' }
+      }
+      if (
+        signalType !== 'consecutive_wrong' &&
+        signalType !== 'wrong_streak' &&
+        signalType !== 'seconds_on_item' &&
+        signalType !== 'slow_item_seconds' &&
+        signalType !== 'time_on_item' &&
+        signalType !== 'session_attempts'
+      ) {
+        console.warn(`Unknown frustration signal type: ${signalType}`)
+      }
+    }
+    return { shouldOffer: false, reason: null }
+  } catch {
+    return { shouldOffer: false, reason: null }
+  }
 }
 
 const DEFAULT_COACH_TITLE = "You're in your seat. That's the hardest part."
@@ -80,12 +173,17 @@ const PracticePage = () => {
   const [consecutiveWrongCount, setConsecutiveWrongCount] = useState(0)
   const [breakOfferReason, setBreakOfferReason] = useState('')
   const [frustrationTimeMs, setFrustrationTimeMs] = useState(60_000)
+  const [sessionStudentId, setSessionStudentId] = useState('')
+  const [writingRubric, setWritingRubric] = useState(null)
+  const [writingEncouragement, setWritingEncouragement] = useState('')
+  const [writingSubmissionComplete, setWritingSubmissionComplete] = useState(false)
   const slowTriggerItemIdRef = useRef('')
   const inputRef = useRef(null)
   const breakOfferReasonRef = useRef('')
   const attemptStatsRef = useRef({ correct: 0, attempted: 0 })
   const consecutiveWrongRef = useRef(0)
   const itemRenderedAtMsRef = useRef(Date.now())
+  const tuningRowsRef = useRef([])
 
   useEffect(() => {
     breakOfferReasonRef.current = breakOfferReason
@@ -103,11 +201,46 @@ const PracticePage = () => {
     itemRenderedAtMsRef.current = itemRenderedAtMs
   }, [itemRenderedAtMs])
 
+  useEffect(() => {
+    let isMounted = true
+
+    const loadTuningRows = async () => {
+      if (!isUuid(sessionStudentId)) {
+        tuningRowsRef.current = []
+        return
+      }
+      try {
+        const response = await fetch(
+          `${API_BASE_URL}/api/student/${encodeURIComponent(sessionStudentId)}/tuning`,
+        )
+        const payload = await response.json().catch(() => ({}))
+        if (!isMounted || !response.ok) {
+          return
+        }
+        tuningRowsRef.current = normalizeFrustrationTuningRows(payload?.tuning)
+      } catch {
+        if (!isMounted) {
+          return
+        }
+        tuningRowsRef.current = []
+      }
+    }
+
+    void loadTuningRows()
+    return () => {
+      isMounted = false
+    }
+  }, [sessionStudentId])
+
   const totalCount = queue.length
   const currentItem = queue[currentIndex] ?? null
   const isBusy = isSubmitting || isLoadingHint
   const promptText =
     typeof currentItem?.prompt?.text === 'string' ? currentItem.prompt.text : ''
+  const writingWordCountGuidance =
+    typeof currentItem?.prompt?.word_count_guidance === 'string'
+      ? currentItem.prompt.word_count_guidance
+      : 'Aim for 40-120 words.'
   const structuredSteps = useMemo(() => {
     const steps = currentItem?.metadata?.structured_steps
     if (!Array.isArray(steps)) {
@@ -195,6 +328,14 @@ const PracticePage = () => {
         }
 
         const frustrationPayload = await frustrationResponse.json().catch(() => ({}))
+        const nextStudentId =
+          typeof frustrationPayload?.student_id === 'string' &&
+          isUuid(frustrationPayload.student_id)
+            ? frustrationPayload.student_id.trim()
+            : ''
+        if (frustrationResponse.ok && nextStudentId) {
+          setSessionStudentId(nextStudentId)
+        }
         if (
           frustrationResponse.ok &&
           typeof frustrationPayload?.frustration_time_threshold_seconds === 'number'
@@ -276,11 +417,26 @@ const PracticePage = () => {
     }
   }, [sessionId])
 
+  const applyLocalFrustrationOffer = useCallback((sessionState) => {
+    if (breakOfferReasonRef.current) {
+      return false
+    }
+    const result = evaluateFrustrationSignals(tuningRowsRef.current, sessionState)
+    if (!result.shouldOffer || typeof result.reason !== 'string') {
+      return false
+    }
+    setBreakOfferReason(result.reason)
+    return true
+  }, [])
+
   useEffect(() => {
     if (!currentItem) {
       return
     }
     setAnswer('')
+    setWritingRubric(null)
+    setWritingEncouragement('')
+    setWritingSubmissionComplete(false)
     setReadingQuestionIndex(0)
     setItemRenderedAtMs(Date.now())
     slowTriggerItemIdRef.current = ''
@@ -319,11 +475,19 @@ const PracticePage = () => {
           Math.round((Date.now() - itemRenderedAtMsRef.current) / 1000),
         ),
       )
-      void runFrustrationEval({
+      const sessionState = {
+        consecutiveWrong: consecutiveWrongRef.current,
+        secondsOnCurrentItem: elapsed,
+        sessionAttemptCount: attemptStatsRef.current.attempted,
+      }
+      const localTriggered = applyLocalFrustrationOffer(sessionState)
+      if (!localTriggered) {
+        void runFrustrationEval({
         consecutive_wrong: consecutiveWrongRef.current,
         seconds_on_current_item: elapsed,
         session_attempt_count: attemptStatsRef.current.attempted,
-      })
+        })
+      }
     }, frustrationTimeMs)
 
     return () => {
@@ -335,6 +499,7 @@ const PracticePage = () => {
     frustrationTimeMs,
     readingQuestionIndex,
     runFrustrationEval,
+    applyLocalFrustrationOffer,
     safeSkillName,
   ])
 
@@ -361,19 +526,28 @@ const PracticePage = () => {
             items_correct: extraStats.correct,
             elapsed_seconds: elapsedSec,
             tier_changes: tierChanges,
+            writing_rubric: writingRubric,
+            writing_encouragement: writingEncouragement,
           },
         },
       })
     },
-    [navigate, safeSkillName, sessionId, sessionStartedAtMs, tierChanges],
+    [navigate, safeSkillName, sessionId, sessionStartedAtMs, tierChanges, writingRubric, writingEncouragement],
   )
 
   const handleSubmitAttempt = async () => {
     if (!currentItem || !sessionId || isBusy) {
       return
     }
+    if (safeSkillName === 'writing' && writingSubmissionComplete) {
+      navigateToComplete({ attempted: attemptStats.attempted, correct: attemptStats.correct })
+      return
+    }
     const trimmed = answer.trim()
     if (trimmed.length === 0) {
+      return
+    }
+    if (safeSkillName === 'writing' && countWords(trimmed) <= 10) {
       return
     }
 
@@ -453,7 +627,27 @@ const PracticePage = () => {
         body: explanationText,
       })
 
+      if (safeSkillName === 'writing') {
+        const rubricFromAttempt =
+          payload?.user_response?.writing_rubric &&
+          typeof payload.user_response.writing_rubric === 'object'
+            ? payload.user_response.writing_rubric
+            : null
+        if (rubricFromAttempt) {
+          setWritingRubric(rubricFromAttempt)
+        } else if (payload?.writing_rubric && typeof payload.writing_rubric === 'object') {
+          setWritingRubric(payload.writing_rubric)
+        }
+        setWritingEncouragement(
+          typeof payload?.encouragement === 'string' ? payload.encouragement : '',
+        )
+      }
+
       if (Boolean(payload.sessionComplete)) {
+        if (safeSkillName === 'writing') {
+          setWritingSubmissionComplete(true)
+          return
+        }
         navigateToComplete({ attempted: nextAttempted, correct: nextCorrect })
         return
       }
@@ -472,21 +666,37 @@ const PracticePage = () => {
 
       if (stayOnPassage) {
         setReadingQuestionIndex((index) => index + 1)
-        await runFrustrationEval({
-          consecutive_wrong: nextWrongCount,
-          seconds_on_current_item: elapsedSeconds,
-          session_attempt_count: nextAttempted,
-        })
+        const sessionState = {
+          consecutiveWrong: nextWrongCount,
+          secondsOnCurrentItem: elapsedSeconds,
+          sessionAttemptCount: nextAttempted,
+        }
+        const localTriggered = applyLocalFrustrationOffer(sessionState)
+        if (!localTriggered) {
+          await runFrustrationEval({
+            consecutive_wrong: nextWrongCount,
+            seconds_on_current_item: elapsedSeconds,
+            session_attempt_count: nextAttempted,
+          })
+        }
         return
       }
 
       setReadingQuestionIndex(0)
       setCurrentIndex((index) => index + 1)
-      await runFrustrationEval({
-        consecutive_wrong: nextWrongCount,
-        seconds_on_current_item: elapsedSeconds,
-        session_attempt_count: nextAttempted,
-      })
+      const sessionState = {
+        consecutiveWrong: nextWrongCount,
+        secondsOnCurrentItem: elapsedSeconds,
+        sessionAttemptCount: nextAttempted,
+      }
+      const localTriggered = applyLocalFrustrationOffer(sessionState)
+      if (!localTriggered) {
+        await runFrustrationEval({
+          consecutive_wrong: nextWrongCount,
+          seconds_on_current_item: elapsedSeconds,
+          session_attempt_count: nextAttempted,
+        })
+      }
     } catch (error) {
       let message = error instanceof Error ? error.message : 'Could not submit attempt.'
       if (typeof navigator !== 'undefined' && navigator.onLine === false) {
@@ -641,6 +851,13 @@ const PracticePage = () => {
   }
 
   const inputDisabled = !currentItem || isBusy
+  const writingWordCount = countWords(answer)
+  const submitDisabled =
+    !currentItem ||
+    isBusy ||
+    (safeSkillName === 'writing'
+      ? (writingSubmissionComplete ? false : writingWordCount <= 10)
+      : answer.trim().length === 0)
 
   const renderSkillBody = () => {
     if (!currentItem || isLoadingQueue) {
@@ -705,6 +922,22 @@ const PracticePage = () => {
           onKeyDown={handleKeyDown}
           inputRef={inputRef}
           inputDisabled={inputDisabled}
+        />
+      )
+    }
+
+    if (safeSkillName === 'writing') {
+      return (
+        <WritingSkillView
+          promptText={promptText}
+          wordCountGuidance={writingWordCountGuidance}
+          answer={answer}
+          onAnswerChange={setAnswer}
+          onKeyDown={handleKeyDown}
+          inputRef={inputRef}
+          inputDisabled={inputDisabled || writingSubmissionComplete}
+          writingRubric={writingRubric}
+          encouragement={writingEncouragement}
         />
       )
     }
@@ -777,9 +1010,13 @@ const PracticePage = () => {
                 type="button"
                 className="btn btn-primary"
                 onClick={handleSubmitAttempt}
-                disabled={!currentItem || isBusy || answer.trim().length === 0}
+                disabled={submitDisabled}
               >
-                {isSubmitting ? 'Checking your answer…' : 'Check my answer →'}
+                {isSubmitting
+                  ? 'Checking your answer…'
+                  : writingSubmissionComplete
+                    ? 'Finish session →'
+                    : 'Check my answer →'}
               </button>
             </div>
 

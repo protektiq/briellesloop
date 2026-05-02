@@ -88,7 +88,76 @@ const normalizeDropTuning = (tuning) => ({
   ),
 });
 
-export const calculateNextTier = (currentTier, isCorrect, responseTimeSeconds, masteryStats, tuning) => {
+const getOptionalNumericTuningValue = (tuning, names, fallback) => {
+  if (!tuning || typeof tuning !== "object") {
+    return fallback;
+  }
+  for (const name of names) {
+    const candidate = tuning[name];
+    if (isFiniteNumber(candidate)) {
+      return candidate;
+    }
+  }
+  return fallback;
+};
+
+const normalizeSkillAdvancementTuning = (tuning) => ({
+  tierAdvanceAccuracy: getOptionalNumericTuningValue(
+    tuning,
+    ["tierAdvanceAccuracy", "tier_advance_accuracy"],
+    80,
+  ),
+  tierAdvanceResponseTime: getOptionalNumericTuningValue(
+    tuning,
+    ["tierAdvanceResponseTime", "tier_advance_response_time"],
+    30,
+  ),
+  tierAdvanceMinItems: getOptionalNumericTuningValue(
+    tuning,
+    ["tierAdvanceMinItems", "tier_advance_min_items"],
+    10,
+  ),
+});
+
+const normalizeItemMasteryRow = (row) => {
+  if (!row || typeof row !== "object") {
+    throw new Error("Each item mastery row must be an object.");
+  }
+
+  const normalizedTier = Number.parseInt(String(row.tier), 10);
+  const normalizedTotalCorrect = Number(row.total_correct);
+  const normalizedTotalAttempts = Number(row.total_attempts);
+  const normalizedAvgResponseTime = Number(row.avg_response_time_seconds);
+
+  if (!Number.isInteger(normalizedTier) || normalizedTier < TIER_MIN || normalizedTier > TIER_MAX) {
+    throw new Error("Each item mastery row must include a valid tier.");
+  }
+  if (!isFiniteNumber(normalizedTotalCorrect) || normalizedTotalCorrect < 0) {
+    throw new Error("Each item mastery row must include a valid total_correct.");
+  }
+  if (!isFiniteNumber(normalizedTotalAttempts) || normalizedTotalAttempts < 0) {
+    throw new Error("Each item mastery row must include a valid total_attempts.");
+  }
+  if (!isFiniteNumber(normalizedAvgResponseTime) || normalizedAvgResponseTime < 0) {
+    throw new Error("Each item mastery row must include a valid avg_response_time_seconds.");
+  }
+
+  return {
+    tier: normalizedTier,
+    totalCorrect: normalizedTotalCorrect,
+    totalAttempts: normalizedTotalAttempts,
+    avgResponseTimeSeconds: normalizedAvgResponseTime,
+  };
+};
+
+export const calculateNextTier = (
+  currentTier,
+  isCorrect,
+  responseTimeSeconds,
+  masteryStats,
+  tuning,
+  skillType = "math",
+) => {
   assertIntegerInRange(currentTier, TIER_MIN, TIER_MAX, "currentTier");
   if (typeof isCorrect !== "boolean") {
     throw new Error("isCorrect must be a boolean.");
@@ -101,6 +170,8 @@ export const calculateNextTier = (currentTier, isCorrect, responseTimeSeconds, m
   );
 
   const normalizedMasteryStats = normalizeMasteryStats(masteryStats);
+  const normalizedSkillType =
+    typeof skillType === "string" ? skillType.trim().toLowerCase() : "math";
   const { tierAdvanceResponseTime } = normalizeAdvanceTuning(tuning);
   if (tierAdvanceResponseTime <= 0 || tierAdvanceResponseTime > RESPONSE_TIME_MAX) {
     throw new Error("tier_advance_response_time must be between 0 and 600.");
@@ -129,10 +200,12 @@ export const calculateNextTier = (currentTier, isCorrect, responseTimeSeconds, m
   }
 
   if (currentTier === 3) {
+    const allowTier4ByTime =
+      normalizedSkillType === "writing" ? true : normalizedMasteryStats.all_responses_under_20s;
     if (
       projectedTotalCorrect >= 6 &&
       normalizedMasteryStats.distinct_sessions_correct >= 3 &&
-      normalizedMasteryStats.all_responses_under_20s
+      allowTier4ByTime
     ) {
       return 4;
     }
@@ -191,6 +264,60 @@ export const shouldAdvanceSkillLevel = (recentAttempts, currentTuning) => {
     tier3Attempts.length;
 
   return accuracyPercent >= tierAdvanceAccuracy && avgResponseSeconds < tierAdvanceResponseTime;
+};
+
+export const checkSkillLevelAdvancement = (itemMasteryRows, tuning) => {
+  if (!Array.isArray(itemMasteryRows)) {
+    throw new Error("itemMasteryRows must be an array.");
+  }
+
+  const {
+    tierAdvanceAccuracy,
+    tierAdvanceResponseTime,
+    tierAdvanceMinItems,
+  } = normalizeSkillAdvancementTuning(tuning);
+
+  if (tierAdvanceAccuracy < 0 || tierAdvanceAccuracy > 100) {
+    throw new Error("tier_advance_accuracy must be between 0 and 100.");
+  }
+  if (tierAdvanceResponseTime <= 0 || tierAdvanceResponseTime > RESPONSE_TIME_MAX) {
+    throw new Error("tier_advance_response_time must be between 0 and 600.");
+  }
+  if (!Number.isInteger(tierAdvanceMinItems) || tierAdvanceMinItems < 1 || tierAdvanceMinItems > 1000) {
+    throw new Error("tier_advance_min_items must be an integer between 1 and 1000.");
+  }
+
+  const tier3Rows = itemMasteryRows
+    .map(normalizeItemMasteryRow)
+    .filter((row) => row.tier === 3);
+
+  const eligibleCount = tier3Rows.length;
+  if (eligibleCount === 0) {
+    return {
+      shouldAdvance: false,
+      eligibleCount: 0,
+      avgAccuracy: 0,
+      avgResponseTime: 0,
+    };
+  }
+
+  const totalCorrect = tier3Rows.reduce((sum, row) => sum + row.totalCorrect, 0);
+  const totalAttempts = tier3Rows.reduce((sum, row) => sum + row.totalAttempts, 0);
+  const avgAccuracy = totalAttempts > 0 ? (totalCorrect / totalAttempts) * 100 : 0;
+  const avgResponseTime =
+    tier3Rows.reduce((sum, row) => sum + row.avgResponseTimeSeconds, 0) / eligibleCount;
+
+  const shouldAdvance =
+    eligibleCount >= tierAdvanceMinItems &&
+    avgAccuracy >= tierAdvanceAccuracy &&
+    avgResponseTime < tierAdvanceResponseTime;
+
+  return {
+    shouldAdvance,
+    eligibleCount,
+    avgAccuracy,
+    avgResponseTime,
+  };
 };
 
 export const shouldDropSkillLevel = (weeklyAccuracy, currentTuning) => {

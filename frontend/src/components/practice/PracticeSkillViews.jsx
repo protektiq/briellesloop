@@ -190,6 +190,87 @@ export const TypingSkillView = ({
   )
 }
 
+const getWordCount = (text) => {
+  if (typeof text !== 'string') {
+    return 0
+  }
+  const trimmed = text.trim()
+  if (!trimmed) {
+    return 0
+  }
+  return trimmed.split(/\s+/).filter((chunk) => chunk.length > 0).length
+}
+
+export const WritingSkillView = ({
+  promptText,
+  wordCountGuidance,
+  answer,
+  onAnswerChange,
+  onKeyDown,
+  inputRef,
+  inputDisabled,
+  writingRubric,
+  encouragement,
+}) => {
+  const currentWordCount = getWordCount(answer)
+  const hasRubric = Boolean(writingRubric && typeof writingRubric === 'object')
+  const rubricCriteria = hasRubric
+    ? [
+        ['Conventions', writingRubric.criteria?.conventions ?? 0],
+        ['Sentence Variety', writingRubric.criteria?.sentence_variety ?? 0],
+        ['Main Idea', writingRubric.criteria?.main_idea ?? 0],
+        ['Detail', writingRubric.criteria?.detail ?? 0],
+      ]
+    : []
+
+  return (
+    <>
+      <div className="activity-question">{promptText || 'Write one clear paragraph in your own words.'}</div>
+      <textarea
+        ref={inputRef}
+        className="input-line writing-textarea"
+        rows={7}
+        value={answer}
+        onChange={(event) => onAnswerChange(event.target.value)}
+        onKeyDown={onKeyDown}
+        placeholder="Write your paragraph here…"
+        aria-label="Writing response"
+        disabled={inputDisabled}
+      />
+      <div className="writing-meta-row">
+        <span className="writing-word-count">Words: {currentWordCount}</span>
+        <span className="writing-word-guidance">{wordCountGuidance || 'Aim for 40-120 words.'}</span>
+      </div>
+      {hasRubric ? (
+        <div className="writing-rubric" aria-label="Writing rubric results">
+          <h4>Rubric score</h4>
+          {rubricCriteria.map(([label, score]) => {
+            const normalizedScore = Math.max(0, Math.min(25, Number(score) || 0))
+            const pct = Math.round((normalizedScore / 25) * 100)
+            return (
+              <div key={label} className="writing-rubric-row">
+                <div className="writing-rubric-header">
+                  <span>{label}</span>
+                  <span>{normalizedScore}/25</span>
+                </div>
+                <div className="writing-rubric-track">
+                  <div className="writing-rubric-fill" style={{ width: `${pct}%` }} />
+                </div>
+              </div>
+            )
+          })}
+          <div className="writing-rubric-total">
+            Total: <strong>{Math.max(0, Math.min(100, Number(writingRubric.total) || 0))}/100</strong>
+          </div>
+          {typeof encouragement === 'string' && encouragement.trim().length > 0 ? (
+            <p className="writing-encouragement">{encouragement.trim()}</p>
+          ) : null}
+        </div>
+      ) : null}
+    </>
+  )
+}
+
 export const poolDisplayName = (pool) => {
   if (pool === 'multisyllabic') {
     return 'Multisyllabic'
