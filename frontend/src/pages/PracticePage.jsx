@@ -79,8 +79,29 @@ const PracticePage = () => {
   const [itemRenderedAtMs, setItemRenderedAtMs] = useState(() => Date.now())
   const [consecutiveWrongCount, setConsecutiveWrongCount] = useState(0)
   const [breakOfferReason, setBreakOfferReason] = useState('')
+  const [frustrationTimeMs, setFrustrationTimeMs] = useState(60_000)
   const slowTriggerItemIdRef = useRef('')
   const inputRef = useRef(null)
+  const breakOfferReasonRef = useRef('')
+  const attemptStatsRef = useRef({ correct: 0, attempted: 0 })
+  const consecutiveWrongRef = useRef(0)
+  const itemRenderedAtMsRef = useRef(Date.now())
+
+  useEffect(() => {
+    breakOfferReasonRef.current = breakOfferReason
+  }, [breakOfferReason])
+
+  useEffect(() => {
+    attemptStatsRef.current = attemptStats
+  }, [attemptStats])
+
+  useEffect(() => {
+    consecutiveWrongRef.current = consecutiveWrongCount
+  }, [consecutiveWrongCount])
+
+  useEffect(() => {
+    itemRenderedAtMsRef.current = itemRenderedAtMs
+  }, [itemRenderedAtMs])
 
   const totalCount = queue.length
   const currentItem = queue[currentIndex] ?? null
@@ -121,12 +142,13 @@ const PracticePage = () => {
   }, [readingQuestions, readingQuestionIndex])
 
   const spellingWord = useMemo(() => {
+    if (safeSkillName !== 'spelling') return ''
     const meta = currentItem?.metadata
     if (meta && typeof meta.word === 'string') {
       return meta.word
     }
     return typeof currentItem?.answer?.text === 'string' ? currentItem.answer.text : ''
-  }, [currentItem])
+  }, [safeSkillName, currentItem])
 
   const spellingPoolLabel = useMemo(() => {
     const p = currentItem?.metadata?.pool
@@ -159,11 +181,29 @@ const PracticePage = () => {
       try {
         setIsLoadingQueue(true)
         setErrorMessage('')
-        const response = await fetch(
-          `${API_BASE_URL}/api/items/queue/${safeSkillName}?session_id=${encodeURIComponent(sessionId)}`,
-        )
+        const [response, frustrationResponse] = await Promise.all([
+          fetch(
+            `${API_BASE_URL}/api/items/queue/${safeSkillName}?session_id=${encodeURIComponent(sessionId)}`,
+          ),
+          fetch(
+            `${API_BASE_URL}/api/session/${encodeURIComponent(sessionId)}/frustration-context`,
+          ),
+        ])
+
         if (!response.ok) {
           throw new Error(`Queue request failed with ${response.status}`)
+        }
+
+        const frustrationPayload = await frustrationResponse.json().catch(() => ({}))
+        if (
+          frustrationResponse.ok &&
+          typeof frustrationPayload?.frustration_time_threshold_seconds === 'number'
+        ) {
+          const sec = Math.min(
+            180,
+            Math.max(20, frustrationPayload.frustration_time_threshold_seconds),
+          )
+          setFrustrationTimeMs(sec * 1000)
         }
 
         const payload = await response.json()
@@ -206,6 +246,36 @@ const PracticePage = () => {
     }
   }, [safeSkillName, sessionId])
 
+  const runFrustrationEval = useCallback(async (metrics) => {
+    if (!sessionId || breakOfferReasonRef.current) {
+      return
+    }
+    try {
+      const response = await fetch(
+        `${API_BASE_URL}/api/session/${encodeURIComponent(sessionId)}/frustration-eval`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(metrics),
+        },
+      )
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok || !payload?.offer_break) {
+        return
+      }
+      const trigger = payload.brain_break_trigger
+      if (
+        trigger === 'auto_two_wrong' ||
+        trigger === 'auto_slow' ||
+        trigger === 'agent_predicted'
+      ) {
+        setBreakOfferReason(trigger)
+      }
+    } catch {
+      /* ignore */
+    }
+  }, [sessionId])
+
   useEffect(() => {
     if (!currentItem) {
       return
@@ -242,13 +312,31 @@ const PracticePage = () => {
         return
       }
       slowTriggerItemIdRef.current = rqKey
-      setBreakOfferReason('auto_slow')
-    }, 60_000)
+      const elapsed = Math.min(
+        600,
+        Math.max(
+          0,
+          Math.round((Date.now() - itemRenderedAtMsRef.current) / 1000),
+        ),
+      )
+      void runFrustrationEval({
+        consecutive_wrong: consecutiveWrongRef.current,
+        seconds_on_current_item: elapsed,
+        session_attempt_count: attemptStatsRef.current.attempted,
+      })
+    }, frustrationTimeMs)
 
     return () => {
       window.clearTimeout(timer)
     }
-  }, [breakOfferReason, currentItem?.item_id, readingQuestionIndex, safeSkillName])
+  }, [
+    breakOfferReason,
+    currentItem?.item_id,
+    frustrationTimeMs,
+    readingQuestionIndex,
+    runFrustrationEval,
+    safeSkillName,
+  ])
 
   const computeResponseSeconds = useCallback(() => {
     const elapsed = Math.round((Date.now() - itemRenderedAtMs) / 1000)
@@ -384,17 +472,21 @@ const PracticePage = () => {
 
       if (stayOnPassage) {
         setReadingQuestionIndex((index) => index + 1)
-        if (!wasCorrect && nextWrongCount >= 2) {
-          setBreakOfferReason('auto_two_wrong')
-        }
+        await runFrustrationEval({
+          consecutive_wrong: nextWrongCount,
+          seconds_on_current_item: elapsedSeconds,
+          session_attempt_count: nextAttempted,
+        })
         return
       }
 
       setReadingQuestionIndex(0)
       setCurrentIndex((index) => index + 1)
-      if (!wasCorrect && nextWrongCount >= 2) {
-        setBreakOfferReason('auto_two_wrong')
-      }
+      await runFrustrationEval({
+        consecutive_wrong: nextWrongCount,
+        seconds_on_current_item: elapsedSeconds,
+        session_attempt_count: nextAttempted,
+      })
     } catch (error) {
       let message = error instanceof Error ? error.message : 'Could not submit attempt.'
       if (typeof navigator !== 'undefined' && navigator.onLine === false) {
@@ -755,8 +847,10 @@ const PracticePage = () => {
               {breakOfferReason === 'auto_two_wrong'
                 ? 'Two tough questions in a row can happen. A 3-minute breathing break may help.'
                 : breakOfferReason === 'auto_slow'
-                  ? "You've been on this one for over a minute. Want a short reset?"
-                  : 'If your brain feels tired, we can pause for a quick breathing break.'}
+                  ? "You've been on this one for a while. Want a short reset?"
+                  : breakOfferReason === 'agent_predicted'
+                    ? 'Patterns from your sessions suggest a short breathing break might help right now.'
+                    : 'If your brain feels tired, we can pause for a quick breathing break.'}
             </p>
             <div className="break-offer-actions">
               <button type="button" className="btn btn-primary" onClick={handleTakeBrainBreak}>

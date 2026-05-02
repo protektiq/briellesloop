@@ -51,8 +51,11 @@ The user message is JSON with:
   "interests": [string],
   "iep_goal": string,
   "recent_misses": [string],           // Optional snippet reminders from prior misses
+  "session_item_count": number,       // 3–10; Calibration / parent tuning (FR-23)
   "nonce": string
 }
 ```
+
+Optional future keys (omit if unset): `calibration_notes` — free-text tuning hints from the Calibration Agent.
 
 Use `nonce` only to diversify topics and wording; never echo it in output.

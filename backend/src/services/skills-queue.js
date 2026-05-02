@@ -10,18 +10,24 @@ const __dirname = path.dirname(__filename);
 
 const READING_PROMPT_PATH = path.resolve(__dirname, "..", "prompts", "reading-generator.md");
 const TYPING_PROMPT_PATH = path.resolve(__dirname, "..", "prompts", "typing-generator.md");
+const SPELLING_PROMPT_PATH = path.resolve(__dirname, "..", "prompts", "spelling-generator.md");
 
 const READING_PURPOSE = "reading_generate";
 const TYPING_PURPOSE = "typing_generate";
+const SPELLING_PURPOSE = "spelling_generate";
 
 const READING_MAX_TOKENS = 3_000;
 const TYPING_MAX_TOKENS = 800;
+const SPELLING_MAX_TOKENS = 600;
+
+const SPELLING_POOLS = new Set(["multisyllabic", "r_controlled", "variant_vowel"]);
 
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 let readingPromptCache = null;
 let typingPromptCache = null;
+let spellingPromptCache = null;
 
 const loadReadingPrompt = async () => {
   if (readingPromptCache) {
@@ -45,6 +51,18 @@ const loadTypingPrompt = async () => {
   }
   typingPromptCache = contents;
   return typingPromptCache;
+};
+
+const loadSpellingPrompt = async () => {
+  if (spellingPromptCache) {
+    return spellingPromptCache;
+  }
+  const contents = await fs.readFile(SPELLING_PROMPT_PATH, "utf8");
+  if (typeof contents !== "string" || contents.trim().length < 100) {
+    throw new Error("spelling-generator.md prompt is missing or too short.");
+  }
+  spellingPromptCache = contents;
+  return spellingPromptCache;
 };
 
 const hashInput = (purpose, systemPrompt, userMessage) => {
@@ -180,6 +198,30 @@ const validateTypingGenerated = (parsed) => {
   return { sentence: parsed.sentence.trim() };
 };
 
+const validateSpellingGenerated = (parsed) => {
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("Generated spelling item must be an object.");
+  }
+  const rawWord =
+    typeof parsed.word === "string" ? parsed.word.trim().toLowerCase().slice(0, 40) : "";
+  if (rawWord.length < 2 || rawWord.length > 32) {
+    throw new Error("word must be 2-32 characters.");
+  }
+  if (!/^[a-z]+$/.test(rawWord)) {
+    throw new Error("word must contain letters a-z only.");
+  }
+  const pool = typeof parsed.pool === "string" ? parsed.pool.trim() : "";
+  if (!SPELLING_POOLS.has(pool)) {
+    throw new Error("pool must be multisyllabic, r_controlled, or variant_vowel.");
+  }
+  let promptText =
+    typeof parsed.prompt_text === "string" ? parsed.prompt_text.trim().slice(0, 120) : "";
+  if (promptText.length === 0) {
+    promptText = "Listen and spell the word.";
+  }
+  return { word: rawWord, pool, prompt_text: promptText };
+};
+
 const callClaudeJson = async (systemPrompt, userMessage, maxTokens) => {
   const response = await claudeClient.messages.create({
     model: claudeModel,
@@ -258,7 +300,12 @@ const fetchStudentSkillLevel = async (studentId, skillName) => {
 const fetchRecentMissesForSkill = async (studentId, skillName) => {
   const result = await query(
     `
-      SELECT i.prompt ->> 'text' AS prompt_text
+      SELECT
+        CASE
+          WHEN i.item_type = 'spelling_word' THEN
+            COALESCE(NULLIF(TRIM(i.metadata ->> 'word'), ''), i.answer ->> 'text', i.prompt ->> 'text')
+          ELSE i.prompt ->> 'text'
+        END AS miss_text
       FROM attempts a
       INNER JOIN sessions s ON s.id = a.session_id
       INNER JOIN items i ON i.id = a.item_id
@@ -273,19 +320,39 @@ const fetchRecentMissesForSkill = async (studentId, skillName) => {
     [studentId, skillName],
   );
   return result.rows
-    .map((row) => row.prompt_text)
+    .map((row) => row.miss_text)
     .filter((value) => typeof value === "string" && value.trim().length > 0);
+};
+
+const fetchSessionItemCount = async (studentId) => {
+  const result = await query(
+    `
+      SELECT current_value
+      FROM student_tuning
+      WHERE student_id = $1::uuid
+        AND parameter_name = 'session_item_count'
+      LIMIT 1
+    `,
+    [studentId],
+  );
+  const raw = result.rows[0]?.current_value;
+  const n = Number.parseInt(String(raw ?? "5"), 10);
+  if (Number.isInteger(n) && n >= 3 && n <= 10) {
+    return n;
+  }
+  return 5;
 };
 
 export const buildStudentContextForReading = async (studentId) => {
   if (typeof studentId !== "string" || !UUID_REGEX.test(studentId)) {
     throw new Error("studentId must be a valid UUID.");
   }
-  const [studentRow, skillRow, readingLevel, recentMisses] = await Promise.all([
+  const [studentRow, skillRow, readingLevel, recentMisses, sessionItemCount] = await Promise.all([
     fetchStudentRow(studentId),
     fetchSkillRow("reading"),
     fetchStudentSkillLevel(studentId, "reading"),
     fetchRecentMissesForSkill(studentId, "reading"),
+    fetchSessionItemCount(studentId),
   ]);
 
   return {
@@ -296,6 +363,7 @@ export const buildStudentContextForReading = async (studentId) => {
     reading_level: readingLevel,
     iep_goal: skillRow.iep_goal_text ?? "",
     recent_misses: recentMisses,
+    session_item_count: sessionItemCount,
   };
 };
 
@@ -303,10 +371,11 @@ export const buildStudentContextForTyping = async (studentId) => {
   if (typeof studentId !== "string" || !UUID_REGEX.test(studentId)) {
     throw new Error("studentId must be a valid UUID.");
   }
-  const [studentRow, skillRow, typingLevel] = await Promise.all([
+  const [studentRow, skillRow, typingLevel, sessionItemCount] = await Promise.all([
     fetchStudentRow(studentId),
     fetchSkillRow("typing"),
     fetchStudentSkillLevel(studentId, "typing"),
+    fetchSessionItemCount(studentId),
   ]);
 
   return {
@@ -316,6 +385,31 @@ export const buildStudentContextForTyping = async (studentId) => {
     interests: Array.isArray(studentRow.interests) ? studentRow.interests : [],
     typing_level: typingLevel,
     iep_goal: skillRow.iep_goal_text ?? "",
+    session_item_count: sessionItemCount,
+  };
+};
+
+const buildStudentContextForSpelling = async (studentId) => {
+  if (typeof studentId !== "string" || !UUID_REGEX.test(studentId)) {
+    throw new Error("studentId must be a valid UUID.");
+  }
+  const [studentRow, skillRow, spellingLevel, recentMisses, sessionItemCount] = await Promise.all([
+    fetchStudentRow(studentId),
+    fetchSkillRow("spelling"),
+    fetchStudentSkillLevel(studentId, "spelling"),
+    fetchRecentMissesForSkill(studentId, "spelling"),
+    fetchSessionItemCount(studentId),
+  ]);
+
+  return {
+    id: studentRow.id,
+    name: typeof studentRow.name === "string" ? studentRow.name.trim().slice(0, 60) : "Brielle",
+    grade: Number.parseInt(String(studentRow.grade), 10),
+    interests: Array.isArray(studentRow.interests) ? studentRow.interests : [],
+    spelling_level: spellingLevel,
+    iep_goal: skillRow.iep_goal_text ?? "",
+    recent_misses: recentMisses,
+    session_item_count: sessionItemCount,
   };
 };
 
@@ -336,6 +430,7 @@ export const generateReadingItem = async (student, options = {}) => {
       interests: student.interests,
       iep_goal: student.iep_goal,
       recent_misses: student.recent_misses ?? [],
+      session_item_count: student.session_item_count ?? 5,
       nonce,
     },
     null,
@@ -383,6 +478,7 @@ export const generateTypingItem = async (student, options = {}) => {
       typing_level: student.typing_level,
       interests: student.interests,
       iep_goal: student.iep_goal,
+      session_item_count: student.session_item_count ?? 5,
       nonce,
     },
     null,
@@ -404,6 +500,59 @@ export const generateTypingItem = async (student, options = {}) => {
 
   await recordGeneration({
     purpose: TYPING_PURPOSE,
+    inputPrompt: userMessage,
+    inputHash,
+    output: validated,
+    tokensIn,
+    tokensOut,
+  });
+
+  return validated;
+};
+
+export const generateSpellingItem = async (student, options = {}) => {
+  if (!student || typeof student !== "object") {
+    throw new Error("student must be an object.");
+  }
+  const systemPrompt = await loadSpellingPrompt();
+  const nonce =
+    typeof options.nonce === "string" && options.nonce.length > 0 && options.nonce.length <= 64
+      ? options.nonce
+      : crypto.randomBytes(8).toString("hex");
+  const userMessage = JSON.stringify(
+    {
+      student_name: student.name,
+      grade: student.grade,
+      spelling_level: student.spelling_level,
+      interests: student.interests,
+      iep_goal: student.iep_goal,
+      recent_misses: student.recent_misses ?? [],
+      session_item_count: student.session_item_count ?? 5,
+      nonce,
+    },
+    null,
+    2,
+  );
+  const inputHash = hashInput(SPELLING_PURPOSE, systemPrompt, userMessage);
+
+  const cached = await findCachedGeneration(SPELLING_PURPOSE, inputHash);
+  if (cached) {
+    try {
+      return validateSpellingGenerated(cached);
+    } catch {
+      /* regenerate */
+    }
+  }
+
+  const { parsed, tokensIn, tokensOut } = await callClaudeJson(
+    systemPrompt,
+    userMessage,
+    SPELLING_MAX_TOKENS,
+  );
+  const validated = validateSpellingGenerated(parsed);
+
+  await recordGeneration({
+    purpose: SPELLING_PURPOSE,
     inputPrompt: userMessage,
     inputHash,
     output: validated,
@@ -489,6 +638,56 @@ const insertTypingItemRow = async (studentId, typingSkillId, typingLevel, genera
       JSON.stringify({
         generated_at: new Date().toISOString(),
         source: "typing_generator_v1",
+      }),
+    ],
+  );
+  const itemId = itemResult.rows[0].id;
+
+  await query(
+    `
+      INSERT INTO item_mastery (
+        student_id,
+        item_id,
+        tier,
+        consecutive_correct,
+        total_attempts,
+        total_correct,
+        next_review_at
+      )
+      VALUES ($1, $2, 0, 0, 0, 0, NOW())
+      ON CONFLICT (student_id, item_id) DO NOTHING
+    `,
+    [studentId, itemId],
+  );
+
+  return itemId;
+};
+
+const insertSpellingItemRow = async (studentId, spellingSkillId, spellingLevel, generated) => {
+  const itemResult = await query(
+    `
+      INSERT INTO items (
+        skill_id,
+        level,
+        item_type,
+        prompt,
+        answer,
+        metadata,
+        ai_generated
+      )
+      VALUES ($1, $2, 'spelling_word', $3::jsonb, $4::jsonb, $5::jsonb, TRUE)
+      RETURNING id
+    `,
+    [
+      spellingSkillId,
+      spellingLevel,
+      JSON.stringify({ text: generated.prompt_text }),
+      JSON.stringify({ text: generated.word }),
+      JSON.stringify({
+        pool: generated.pool,
+        word: generated.word,
+        generated_at: new Date().toISOString(),
+        source: "spelling_generator_v1",
       }),
     ],
   );
@@ -637,20 +836,28 @@ export const ensureSpellingQueueItems = async (studentId, spellingSkillId, requi
     throw new Error("requiredCount must be an integer between 1 and 20.");
   }
 
-  const spellingLevel = await fetchStudentSkillLevel(studentId, "spelling");
+  const studentContext = await buildStudentContextForSpelling(studentId);
+  const spellingLevel = studentContext.spelling_level;
   const eligible = await countQueueEligibleSpellingItems(studentId, spellingSkillId, spellingLevel);
   const shortfall = Math.max(0, requiredCount - eligible);
+  if (shortfall === 0) {
+    return { generated: 0, eligibleBefore: eligible, eligibleAfter: eligible };
+  }
 
-  if (shortfall > 0) {
-    console.error(
-      `[spelling] Insufficient eligible items for student ${studentId} at level ${spellingLevel}: need ${shortfall} more (have ${eligible}, need ${requiredCount}).`,
-    );
+  const generationPromises = [];
+  for (let index = 0; index < shortfall; index += 1) {
+    const nonce = `${Date.now().toString(36)}-${index}-${crypto.randomBytes(4).toString("hex")}`;
+    generationPromises.push(generateSpellingItem(studentContext, { nonce }));
+  }
+  const generated = await Promise.all(generationPromises);
+
+  for (const item of generated) {
+    await insertSpellingItemRow(studentId, spellingSkillId, spellingLevel, item);
   }
 
   return {
-    generated: 0,
+    generated: generated.length,
     eligibleBefore: eligible,
-    eligibleAfter: eligible,
-    shortfall,
+    eligibleAfter: eligible + generated.length,
   };
 };

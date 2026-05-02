@@ -35,8 +35,11 @@ User message JSON:
   "typing_level": number,            // 1-10
   "interests": [string],
   "iep_goal": string,                 // Writing / conventions goal from IEP
+  "session_item_count": number,       // 3–10; Calibration / parent tuning (FR-23)
   "nonce": string
 }
 ```
+
+Optional future keys (omit if unset): `calibration_notes` — free-text tuning hints from the Calibration Agent.
 
 Use `nonce` for variation only.

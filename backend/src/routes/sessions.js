@@ -1,5 +1,9 @@
 import { Router } from "express";
 import { query } from "../db.js";
+import {
+  evaluateFrustrationOffer,
+  fetchFrustrationTuning,
+} from "../services/frustration-eval.js";
 
 const router = Router();
 
@@ -111,6 +115,40 @@ const parseBrainBreakTrigger = (value) => {
   }
 
   return trimmed;
+};
+
+const parseFrustrationEvalBody = (body) => {
+  const raw = body ?? {};
+  const cw = Number.parseInt(String(raw.consecutive_wrong ?? ""), 10);
+  const sec = Number.parseFloat(String(raw.seconds_on_current_item ?? ""));
+  const sac = Number.parseInt(String(raw.session_attempt_count ?? ""), 10);
+
+  if (!Number.isInteger(cw) || cw < 0 || cw > 30) {
+    return {
+      error:
+        "consecutive_wrong must be an integer between 0 and 30.",
+    };
+  }
+  if (!Number.isFinite(sec) || sec < 0 || sec > 600) {
+    return {
+      error:
+        "seconds_on_current_item must be a number between 0 and 600.",
+    };
+  }
+  if (!Number.isInteger(sac) || sac < 0 || sac > 500) {
+    return {
+      error:
+        "session_attempt_count must be an integer between 0 and 500.",
+    };
+  }
+
+  return {
+    metrics: {
+      consecutive_wrong: cw,
+      seconds_on_current_item: sec,
+      session_attempt_count: sac,
+    },
+  };
 };
 
 router.post("/start", async (req, res, next) => {
@@ -304,6 +342,100 @@ router.post("/:id/post-checkout", async (req, res, next) => {
       post_mood_emoji: row.post_mood_emoji,
       post_mood_score: Number(row.post_mood_score),
       reflection: row.reflection,
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.get("/:id/frustration-context", async (req, res, next) => {
+  try {
+    const sessionId = parseUuid(req.params.id);
+    if (!sessionId) {
+      return res.status(400).json({
+        error: "Invalid session id.",
+        field: "id must be a valid UUID.",
+      });
+    }
+
+    const sessionResult = await query(
+      `
+        SELECT id, student_id, ended_at
+        FROM sessions
+        WHERE id = $1::uuid
+        LIMIT 1
+      `,
+      [sessionId],
+    );
+    const sessionRow = sessionResult.rows[0];
+    if (!sessionRow) {
+      return res.status(404).json({ error: "Session not found." });
+    }
+    if (sessionRow.ended_at) {
+      return res.status(400).json({
+        error: "Session already ended.",
+        field: "frustration context is only available for active sessions.",
+      });
+    }
+
+    const tuning = await fetchFrustrationTuning(sessionRow.student_id);
+    return res.json({
+      session_id: sessionId,
+      frustration_wrong_threshold: tuning.frustrationWrongThreshold,
+      frustration_time_threshold_seconds: tuning.frustrationTimeThreshold,
+      signals: tuning.signals.map((s) => ({
+        type: s.type,
+        threshold: s.threshold,
+      })),
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.post("/:id/frustration-eval", async (req, res, next) => {
+  try {
+    const sessionId = parseUuid(req.params.id);
+    if (!sessionId) {
+      return res.status(400).json({
+        error: "Invalid session id.",
+        field: "id must be a valid UUID.",
+      });
+    }
+
+    const parsed = parseFrustrationEvalBody(req.body);
+    if (parsed.error) {
+      return res.status(400).json({
+        error: "Invalid frustration-eval payload.",
+        field: parsed.error,
+      });
+    }
+
+    const sessionResult = await query(
+      `
+        SELECT id, student_id, ended_at
+        FROM sessions
+        WHERE id = $1::uuid
+        LIMIT 1
+      `,
+      [sessionId],
+    );
+    const sessionRow = sessionResult.rows[0];
+    if (!sessionRow) {
+      return res.status(404).json({ error: "Session not found." });
+    }
+    if (sessionRow.ended_at) {
+      return res.status(400).json({
+        error: "Session already ended.",
+        field: "frustration eval is only available for active sessions.",
+      });
+    }
+
+    const tuning = await fetchFrustrationTuning(sessionRow.student_id);
+    const result = evaluateFrustrationOffer(parsed.metrics, tuning);
+    return res.json({
+      session_id: sessionId,
+      ...result,
     });
   } catch (error) {
     return next(error);

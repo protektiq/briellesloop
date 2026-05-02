@@ -10,9 +10,15 @@ import { gradeAttempt } from "../services/grader.js";
 import {
   calculateNextReviewAt,
   calculateNextTier,
+  MIN_WEEKLY_ATTEMPTS_FOR_LEVEL_DROP,
   shouldAdvanceSkillLevel,
   shouldDropSkillLevel,
 } from "../services/srs.js";
+import {
+  formatUtcDateString,
+  toUtcRange,
+  utcMondayOfContainingWeek,
+} from "../services/dashboard-week.js";
 import { getClient, query } from "../db.js";
 
 const router = Router();
@@ -453,9 +459,14 @@ router.post("/:id/attempt", async (req, res, next) => {
 
     const shouldAdvance = shouldAdvanceSkillLevel(recentTier3AttemptsResult.rows, tuning);
 
+    const weekMonday = utcMondayOfContainingWeek();
+    const currentWeekMondayStr = formatUtcDateString(weekMonday);
+    const { startIso, endIso } = toUtcRange(currentWeekMondayStr);
+
     const weeklyAccuracyResult = await client.query(
       `
         SELECT
+          COUNT(*)::INT AS attempt_count,
           CASE
             WHEN COUNT(*) = 0 THEN NULL
             ELSE (COUNT(*) FILTER (WHERE a.is_correct)::DECIMAL / COUNT(*)) * 100
@@ -467,13 +478,23 @@ router.post("/:id/attempt", async (req, res, next) => {
           ON i.id = a.item_id
         WHERE s.student_id = $1
           AND i.skill_id = $2
-          AND a.attempted_at >= NOW() - INTERVAL '7 days'
+          AND a.attempted_at >= $3::timestamptz
+          AND a.attempted_at < $4::timestamptz
       `,
-      [sessionContext.student_id, sessionContext.skill_id],
+      [sessionContext.student_id, sessionContext.skill_id, startIso, endIso],
     );
 
-    const weeklyAccuracy = Number(weeklyAccuracyResult.rows[0]?.weekly_accuracy ?? 100);
-    const shouldDrop = shouldDropSkillLevel(weeklyAccuracy, tuning);
+    const weeklyAttemptCount = Number(weeklyAccuracyResult.rows[0]?.attempt_count ?? 0);
+    const weeklyAccuracyRaw = weeklyAccuracyResult.rows[0]?.weekly_accuracy;
+    const weeklyAccuracy =
+      weeklyAccuracyRaw === null || weeklyAccuracyRaw === undefined
+        ? null
+        : Number(weeklyAccuracyRaw);
+
+    const dropEligible =
+      weeklyAccuracy !== null &&
+      weeklyAttemptCount >= MIN_WEEKLY_ATTEMPTS_FOR_LEVEL_DROP &&
+      shouldDropSkillLevel(weeklyAccuracy, tuning);
 
     await client.query(
       `
@@ -485,7 +506,38 @@ router.post("/:id/attempt", async (req, res, next) => {
       [sessionContext.student_id, sessionContext.skill_id],
     );
 
-    if (shouldAdvance || shouldDrop) {
+    const skillLevelRow = await client.query(
+      `
+        SELECT last_weekly_drop_week_start
+        FROM student_skill_levels
+        WHERE student_id = $1
+          AND skill_id = $2
+        LIMIT 1
+      `,
+      [sessionContext.student_id, sessionContext.skill_id],
+    );
+
+    const lastDropWeekStart = skillLevelRow.rows[0]?.last_weekly_drop_week_start;
+    const lastDropWeekStr =
+      lastDropWeekStart instanceof Date
+        ? formatUtcDateString(lastDropWeekStart)
+        : typeof lastDropWeekStart === "string"
+          ? lastDropWeekStart.slice(0, 10)
+          : null;
+
+    const alreadyDroppedThisUtcWeek =
+      lastDropWeekStr !== null && lastDropWeekStr === currentWeekMondayStr;
+
+    const shouldApplyDrop = dropEligible && !alreadyDroppedThisUtcWeek;
+
+    let levelDelta = 0;
+    if (shouldApplyDrop) {
+      levelDelta = -1;
+    } else if (shouldAdvance) {
+      levelDelta = 1;
+    }
+
+    if (levelDelta !== 0) {
       await client.query(
         `
           UPDATE student_skill_levels
@@ -493,14 +545,49 @@ router.post("/:id/attempt", async (req, res, next) => {
             10,
             GREATEST(
               1,
-              level + CASE WHEN $3 THEN 1 WHEN $4 THEN -1 ELSE 0 END
+              level + $3
             )
           ),
+          last_weekly_drop_week_start = CASE
+            WHEN $4::boolean THEN $5::date
+            ELSE last_weekly_drop_week_start
+          END,
           updated_at = NOW()
           WHERE student_id = $1
             AND skill_id = $2
         `,
-        [sessionContext.student_id, sessionContext.skill_id, shouldAdvance, shouldDrop],
+        [
+          sessionContext.student_id,
+          sessionContext.skill_id,
+          levelDelta,
+          shouldApplyDrop,
+          currentWeekMondayStr,
+        ],
+      );
+    }
+
+    if (shouldApplyDrop) {
+      await client.query(
+        `
+          UPDATE item_mastery im
+          SET next_review_at = NOW(),
+              last_seen_at = COALESCE(im.last_seen_at, NOW())
+          FROM items i
+          WHERE im.item_id = i.id
+            AND im.student_id = $1
+            AND i.skill_id = $2
+            AND im.item_id IN (
+              SELECT DISTINCT a.item_id
+              FROM attempts a
+              INNER JOIN sessions s ON s.id = a.session_id
+              INNER JOIN items ii ON ii.id = a.item_id
+              WHERE s.student_id = $1
+                AND ii.skill_id = $2
+                AND a.is_correct = FALSE
+                AND a.attempted_at >= NOW() - INTERVAL '14 days'
+            )
+        `,
+        [sessionContext.student_id, sessionContext.skill_id],
       );
     }
 

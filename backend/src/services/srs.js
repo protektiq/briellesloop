@@ -202,3 +202,6 @@ export const shouldDropSkillLevel = (weeklyAccuracy, currentTuning) => {
 
   return weeklyAccuracy < weeklyDropAccuracy;
 };
+
+/** Minimum graded attempts in the current UTC calendar week before FR-16 drop can apply. */
+export const MIN_WEEKLY_ATTEMPTS_FOR_LEVEL_DROP = 5;
