@@ -10,7 +10,21 @@ const router = Router();
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SKILL_NAME_REGEX = /^[a-z]{2,24}$/;
-const MOOD_EMOJI_SET = new Set(["😢", "😟", "😐", "🙂", "😄"]);
+const MOOD_EMOJI_SET = new Set([
+  "😭",
+  "😢",
+  "😤",
+  "😟",
+  "🥺",
+  "😴",
+  "😐",
+  "🙂",
+  "😊",
+  "😌",
+  "😄",
+  "🤩",
+  "🥳",
+]);
 const BRAIN_BREAK_TRIGGER_SET = new Set([
   "auto_two_wrong",
   "auto_slow",
@@ -171,7 +185,7 @@ router.post("/start", async (req, res, next) => {
         fields: {
           student_id: "Required UUID string.",
           skill: "Required skill name, 2-24 lowercase letters.",
-          pre_mood_emoji: "Required mood emoji from 😢 😟 😐 🙂 😄.",
+          pre_mood_emoji: "Required mood emoji from the MoodCheckIn set (see server MOOD_EMOJI_SET).",
           pre_mood_score: "Required integer from 0 to 10.",
         },
       });
@@ -310,7 +324,7 @@ router.post("/:id/post-checkout", async (req, res, next) => {
       return res.status(400).json({
         error: "Invalid post-checkout payload.",
         fields: {
-          post_mood_emoji: "Required mood emoji from 😢 😟 😐 🙂 😄.",
+          post_mood_emoji: "Required mood emoji from the MoodCheckIn set (see server MOOD_EMOJI_SET).",
           post_mood_score: "Required integer from 0 to 10.",
           reflection: "Required non-empty string up to 2000 chars.",
         },

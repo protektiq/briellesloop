@@ -3,7 +3,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { claudeClient, claudeModel } from "./claude.js";
+import { pickClassicReadingExcerpt } from "../data/reading-classic-excerpts.js";
 import { query } from "../db.js";
+import { normalizeSkillsTableId } from "../utils/postgres-ids.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -589,7 +591,14 @@ const insertReadingItemRow = async (studentId, readingSkillId, readingLevel, gen
         title: generated.title,
         questions: generated.questions,
         generated_at: new Date().toISOString(),
-        source: "reading_generator_v1",
+        source:
+          typeof generated.source === "string" && generated.source.trim().length > 0
+            ? generated.source.trim()
+            : "reading_generator_v1",
+        book_attribution:
+          typeof generated.book_attribution === "string" && generated.book_attribution.trim().length > 0
+            ? generated.book_attribution.trim()
+            : null,
       }),
     ],
   );
@@ -755,36 +764,28 @@ export const ensureReadingQueueItems = async (studentId, readingSkillId, require
   if (typeof studentId !== "string" || !UUID_REGEX.test(studentId)) {
     throw new Error("studentId must be a valid UUID.");
   }
-  if (!Number.isInteger(readingSkillId) || readingSkillId < 1) {
-    throw new Error("readingSkillId must be a positive integer.");
-  }
+  const readingSkillPk = normalizeSkillsTableId(readingSkillId, "readingSkillId");
   if (!Number.isInteger(requiredCount) || requiredCount < 1 || requiredCount > 20) {
     throw new Error("requiredCount must be an integer between 1 and 20.");
   }
 
   const studentContext = await buildStudentContextForReading(studentId);
   const readingLevel = studentContext.reading_level;
-  const eligible = await countQueueEligibleAiItems(studentId, readingSkillId, readingLevel);
+  const eligible = await countQueueEligibleAiItems(studentId, readingSkillPk, readingLevel);
   const shortfall = Math.max(0, requiredCount - eligible);
   if (shortfall === 0) {
     return { generated: 0, eligibleBefore: eligible, eligibleAfter: eligible };
   }
 
-  const generationPromises = [];
   for (let index = 0; index < shortfall; index += 1) {
-    const nonce = `${Date.now().toString(36)}-${index}-${crypto.randomBytes(4).toString("hex")}`;
-    generationPromises.push(generateReadingItem(studentContext, { nonce }));
-  }
-  const generated = await Promise.all(generationPromises);
-
-  for (const item of generated) {
-    await insertReadingItemRow(studentId, readingSkillId, readingLevel, item);
+    const classic = pickClassicReadingExcerpt({ index });
+    await insertReadingItemRow(studentId, readingSkillPk, readingLevel, classic);
   }
 
   return {
-    generated: generated.length,
+    generated: shortfall,
     eligibleBefore: eligible,
-    eligibleAfter: eligible + generated.length,
+    eligibleAfter: eligible + shortfall,
   };
 };
 
@@ -792,16 +793,14 @@ export const ensureTypingQueueItems = async (studentId, typingSkillId, requiredC
   if (typeof studentId !== "string" || !UUID_REGEX.test(studentId)) {
     throw new Error("studentId must be a valid UUID.");
   }
-  if (!Number.isInteger(typingSkillId) || typingSkillId < 1) {
-    throw new Error("typingSkillId must be a positive integer.");
-  }
+  const typingSkillPk = normalizeSkillsTableId(typingSkillId, "typingSkillId");
   if (!Number.isInteger(requiredCount) || requiredCount < 1 || requiredCount > 20) {
     throw new Error("requiredCount must be an integer between 1 and 20.");
   }
 
   const studentContext = await buildStudentContextForTyping(studentId);
   const typingLevel = studentContext.typing_level;
-  const eligible = await countQueueEligibleAiItems(studentId, typingSkillId, typingLevel);
+  const eligible = await countQueueEligibleAiItems(studentId, typingSkillPk, typingLevel);
   const shortfall = Math.max(0, requiredCount - eligible);
   if (shortfall === 0) {
     return { generated: 0, eligibleBefore: eligible, eligibleAfter: eligible };
@@ -815,7 +814,7 @@ export const ensureTypingQueueItems = async (studentId, typingSkillId, requiredC
   const generated = await Promise.all(generationPromises);
 
   for (const item of generated) {
-    await insertTypingItemRow(studentId, typingSkillId, typingLevel, item);
+    await insertTypingItemRow(studentId, typingSkillPk, typingLevel, item);
   }
 
   return {
@@ -829,16 +828,14 @@ export const ensureSpellingQueueItems = async (studentId, spellingSkillId, requi
   if (typeof studentId !== "string" || !UUID_REGEX.test(studentId)) {
     throw new Error("studentId must be a valid UUID.");
   }
-  if (!Number.isInteger(spellingSkillId) || spellingSkillId < 1) {
-    throw new Error("spellingSkillId must be a positive integer.");
-  }
+  const spellingSkillPk = normalizeSkillsTableId(spellingSkillId, "spellingSkillId");
   if (!Number.isInteger(requiredCount) || requiredCount < 1 || requiredCount > 20) {
     throw new Error("requiredCount must be an integer between 1 and 20.");
   }
 
   const studentContext = await buildStudentContextForSpelling(studentId);
   const spellingLevel = studentContext.spelling_level;
-  const eligible = await countQueueEligibleSpellingItems(studentId, spellingSkillId, spellingLevel);
+  const eligible = await countQueueEligibleSpellingItems(studentId, spellingSkillPk, spellingLevel);
   const shortfall = Math.max(0, requiredCount - eligible);
   if (shortfall === 0) {
     return { generated: 0, eligibleBefore: eligible, eligibleAfter: eligible };
@@ -852,7 +849,7 @@ export const ensureSpellingQueueItems = async (studentId, spellingSkillId, requi
   const generated = await Promise.all(generationPromises);
 
   for (const item of generated) {
-    await insertSpellingItemRow(studentId, spellingSkillId, spellingLevel, item);
+    await insertSpellingItemRow(studentId, spellingSkillPk, spellingLevel, item);
   }
 
   return {

@@ -19,6 +19,7 @@ import settingsRouter from "./src/routes/settings.js";
 import studentProfileRouter from "./src/routes/student-profile.js";
 import parentRouter from "./src/routes/parent.js";
 import shareRouter from "./src/routes/share.js";
+import iepRouter from "./src/routes/iep.js";
 import ttsRouter from "./src/routes/tts.js";
 import { ensureTtsReady } from "./src/services/tts.js";
 
@@ -64,6 +65,7 @@ app.use("/api/settings", studentProfileRouter);
 app.use("/api/student", studentProfileRouter);
 app.use("/api/parent", parentRouter);
 app.use("/api/share", shareRouter);
+app.use("/api/iep", iepRouter);
 app.use("/api/tts", ttsRouter);
 
 app.use((error, _req, res, _next) => {

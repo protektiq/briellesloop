@@ -1,6 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo } from 'react'
 import { MicButton } from '../MicButton.jsx'
-import { fetchTtsAudio } from '../../utils/tts.js'
 
 export const MathSkillView = ({
   currentItem,
@@ -92,17 +91,26 @@ export const ReadingSkillView = ({
   questionText,
   readingQuestionIndex,
   passageTitle,
+  bookAttribution,
   answer,
   onAnswerChange,
   onKeyDown,
   inputRef,
   inputDisabled,
 }) => {
+  const attribution =
+    typeof bookAttribution === 'string' && bookAttribution.trim().length > 0 ? bookAttribution.trim() : ''
+
   return (
     <>
       <div className="reading-passage-block">
         {passageTitle ? (
           <h3 className="reading-passage-title">{passageTitle}</h3>
+        ) : null}
+        {attribution ? (
+          <p className="reading-passage-attribution" role="note">
+            {attribution}
+          </p>
         ) : null}
         <div className="reading-passage-text" aria-label="Reading passage">
           {passage}
@@ -128,6 +136,7 @@ export const ReadingSkillView = ({
 
 export const SpellingSkillView = ({
   poolLabel,
+  wordToSpell,
   answer,
   onAnswerChange,
   onKeyDown,
@@ -137,14 +146,24 @@ export const SpellingSkillView = ({
   onRequestTypingFallback,
 }) => {
   const showVoiceOnly = Boolean(spellWithVoiceOnly)
+  const safeWord =
+    typeof wordToSpell === 'string' && wordToSpell.trim().length > 0 ? wordToSpell.trim() : ''
 
   return (
     <>
       <div className="activity-question">
         {showVoiceOnly
-          ? 'Listen to the word, then say it back clearly. Use Hear again below if you need a replay.'
-          : 'Listen to the word, then spell it. Use Hear again in the row below if you need a replay.'}
+          ? 'Read the word below, then listen with Hear again and say it back clearly.'
+          : 'Read the word below first. When you are ready, use Hear again to listen, then spell it in the box.'}
       </div>
+      {safeWord ? (
+        <div className="spelling-word-card" aria-label="Word to spell">
+          <span className="spelling-word-card-label">Your word</span>
+          <span className="spelling-word-card-word" lang="en">
+            {safeWord}
+          </span>
+        </div>
+      ) : null}
       {poolLabel ? (
         <p className="spelling-pool-tag" aria-label="Word pattern">
           Pattern: {poolLabel}
@@ -322,64 +341,6 @@ export const poolDisplayName = (pool) => {
     return 'Variant vowels'
   }
   return ''
-}
-
-export const useSpellingSpeech = (wordForSpeech, itemId, voice = 'af_sky') => {
-  const lastSpokenRef = useRef('')
-  const audioRef = useRef(null)
-  const revokeRef = useRef(null)
-
-  useEffect(() => {
-    if (!wordForSpeech || !itemId) {
-      return undefined
-    }
-    const safeVoice = typeof voice === 'string' && voice.trim().length > 0 ? voice.trim() : 'af_sky'
-    const key = `${itemId}:${wordForSpeech}:${safeVoice}`
-    if (lastSpokenRef.current === key) {
-      return undefined
-    }
-    lastSpokenRef.current = key
-
-    const cleanupAudio = () => {
-      if (audioRef.current) {
-        try {
-          audioRef.current.pause()
-        } catch {
-          /* ignore */
-        }
-        audioRef.current = null
-      }
-      if (revokeRef.current) {
-        revokeRef.current()
-        revokeRef.current = null
-      }
-    }
-
-    let cancelled = false
-
-    const run = async () => {
-      try {
-        const { audio, revoke } = await fetchTtsAudio({ text: wordForSpeech, voice: safeVoice })
-        if (cancelled) {
-          revoke()
-          return
-        }
-        cleanupAudio()
-        audioRef.current = audio
-        revokeRef.current = revoke
-        await audio.play()
-      } catch (err) {
-        console.warn('Kokoro spelling TTS failed', err)
-      }
-    }
-
-    void run()
-
-    return () => {
-      cancelled = true
-      cleanupAudio()
-    }
-  }, [wordForSpeech, itemId, voice])
 }
 
 export const useTypingLiveStats = (answer, targetSentence, itemRenderedAtMs) => {

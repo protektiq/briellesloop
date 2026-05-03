@@ -2,6 +2,7 @@ import { Router } from "express";
 import { query } from "../db.js";
 import { getSuggestedSkill } from "../services/skill-suggester.js";
 import { resolveStudentId } from "../services/student-resolve.js";
+import { computePracticeStreakDays } from "../services/dashboard-streak.js";
 import { getDashboardWeekPayload } from "../services/dashboard-week.js";
 
 const router = Router();
@@ -83,6 +84,7 @@ router.get("/skills", async (_req, res, next) => {
     );
 
     const suggestedSkillName = await getSuggestedSkill(studentId);
+    const practiceStreakDays = await computePracticeStreakDays(studentId);
     const skills = skillsResult.rows
       .map((row) => {
         const normalizedName = normalizeSkillName(row.skill_name);
@@ -110,6 +112,7 @@ router.get("/skills", async (_req, res, next) => {
     return res.json({
       student_id: studentId,
       suggested_skill_name: suggestedSkillName,
+      practice_streak_days: practiceStreakDays,
       skills,
       generated_at: new Date().toISOString(),
     });

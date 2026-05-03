@@ -1,10 +1,24 @@
+import { randomUUID } from "node:crypto";
 import { claudeClient, claudeModel } from "./claude.js";
 import { query } from "../db.js";
-import { runDbTool } from "../agents/tools/db-tools.js";
+import { runDbTool, isDbToolName } from "../agents/tools/db-tools.js";
 import { runActionTool } from "../agents/tools/action-tools.js";
 
 const REQUEST_TIMEOUT_MS = 300_000;
 const MAX_AGENT_STEPS = 36;
+
+/** @type {Set<string>} */
+const DRY_RUN_WRITE_TOOLS = new Set([
+  "propose_tuning_change",
+  "curate_queue",
+  "request_new_items",
+  "update_frustration_signals",
+  "write_weekly_insight",
+  "flag_iep_concern",
+  "propose_iep_goal_update",
+  "propose_level_override",
+  "write_agent_note",
+]);
 
 /** Claude Sonnet-class approximate pricing ($/token) — aligns with PRD cost tracking; tune via env if needed */
 const INPUT_USD_PER_TOKEN = Number(process.env.ANTHROPIC_INPUT_USD_PER_TOKEN ?? 3 / 1_000_000);
@@ -23,12 +37,15 @@ const summarizeObservations = (entries) => ({
 /**
  * Runs a Claude tool-use loop for one agent, logging agent_runs.
  * @param {object} params
- * @param {string} params.agentName - agents.name (calibration|content|frustration|insight)
+ * @param {string} params.agentName - agents.name (calibration|content|frustration|insight|curriculum)
  * @param {string} params.studentId - UUID
  * @param {import('@anthropic-ai/sdk').Tool[]} params.tools
  * @param {Set<string>} params.allowedToolNames
  * @param {string} params.systemPrompt
  * @param {string} params.userMessage
+ * @param {boolean} [params.dryRun]
+ * @param {string} [params.simulationStart] - ISO timestamptz, inclusive
+ * @param {string} [params.simulationEnd] - ISO timestamptz, exclusive
  */
 export const runAgentConversation = async ({
   agentName,
@@ -37,6 +54,9 @@ export const runAgentConversation = async ({
   allowedToolNames,
   systemPrompt,
   userMessage,
+  dryRun = false,
+  simulationStart,
+  simulationEnd,
 }) => {
   const agentRow = await query(`SELECT id FROM agents WHERE name = $1 LIMIT 1`, [agentName]);
   if (agentRow.rowCount === 0) {
@@ -46,11 +66,11 @@ export const runAgentConversation = async ({
 
   const runInsert = await query(
     `
-      INSERT INTO agent_runs (agent_id, status, observations, reasoning)
-      VALUES ($1::int, 'running', '{}'::jsonb, '')
+      INSERT INTO agent_runs (agent_id, status, observations, reasoning, dry_run)
+      VALUES ($1::int, 'running', '{}'::jsonb, '', $2::boolean)
       RETURNING id
     `,
-    [agentId],
+    [agentId, dryRun],
   );
   const agentRunId = runInsert.rows[0].id;
 
@@ -59,6 +79,9 @@ export const runAgentConversation = async ({
     agentId,
     studentId,
     agentName,
+    dryRun,
+    simulationStart: typeof simulationStart === "string" ? simulationStart : undefined,
+    simulationEnd: typeof simulationEnd === "string" ? simulationEnd : undefined,
   };
 
   let messages = [
@@ -72,6 +95,8 @@ export const runAgentConversation = async ({
   let totalOutput = 0;
   const reasoningParts = [];
   const observationLog = [];
+  /** @type {{ tool: string, input: object, result: object }[]} */
+  const simulatedActions = [];
 
   const executeTool = async (name, rawInput) => {
     if (!allowedToolNames.has(name)) {
@@ -85,13 +110,27 @@ export const runAgentConversation = async ({
         parsedInput = {};
       }
     }
-    if (name.startsWith("query_")) {
+    if (typeof parsedInput !== "object" || parsedInput === null) {
+      parsedInput = {};
+    }
+    if (dryRun && DRY_RUN_WRITE_TOOLS.has(name)) {
+      const id = randomUUID();
+      const result = { success: true, id, dry_run: true };
+      simulatedActions.push({ tool: name, input: parsedInput, result });
+      observationLog.push({ tool: name, ok: true, dry_run: true });
+      return result;
+    }
+    if (isDbToolName(name)) {
       const out = await runDbTool(name, parsedInput, ctx);
       observationLog.push({ tool: name, ok: true });
       return out;
     }
     const out = await runActionTool(name, parsedInput, ctx);
-    observationLog.push({ tool: name, ok: true, summary: typeof out?.message === "string" ? out.message : null });
+    observationLog.push({
+      tool: name,
+      ok: true,
+      summary: typeof out?.message === "string" ? out.message : null,
+    });
     return out;
   };
 
@@ -165,6 +204,8 @@ export const runAgentConversation = async ({
     output_tokens: totalOutput,
   });
 
+  const finalStatus = lastError ? "failed" : dryRun ? "simulation" : "completed";
+
   await query(
     `
       UPDATE agent_runs
@@ -175,29 +216,37 @@ export const runAgentConversation = async ({
         observations = $4::jsonb,
         reasoning = $5,
         tokens_used = $6::int,
-        cost_usd = $7::decimal
+        cost_usd = $7::decimal,
+        dry_run = $8::boolean
       WHERE id = $1::uuid
     `,
     [
       agentRunId,
-      lastError ? "failed" : "completed",
+      finalStatus,
       lastError,
       JSON.stringify(summarizeObservations(observationLog)),
       reasoning || null,
       tokensUsed,
       costUsd.toFixed(6),
+      dryRun,
     ],
   );
 
-  await query(`UPDATE agents SET last_run_at = NOW() WHERE id = $1::int`, [agentId]);
+  if (!dryRun) {
+    await query(`UPDATE agents SET last_run_at = NOW() WHERE id = $1::int`, [agentId]);
+  }
 
   if (lastError) {
     throw new Error(lastError);
   }
 
-  return {
+  const base = {
     agent_run_id: agentRunId,
     tokens_used: tokensUsed,
     cost_usd: Number(costUsd.toFixed(6)),
   };
+  if (dryRun) {
+    return { ...base, simulated_actions: simulatedActions };
+  }
+  return base;
 };

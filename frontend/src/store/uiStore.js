@@ -10,7 +10,7 @@ const clampStreak = (value) => {
 }
 
 export const useUiStore = create((set) => ({
-  streakCount: 7,
+  streakCount: 0,
   setStreakCount: (nextValue) =>
     set(() => ({
       streakCount: clampStreak(nextValue),

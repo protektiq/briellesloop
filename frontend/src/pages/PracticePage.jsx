@@ -7,7 +7,6 @@ import {
   TypingSkillView,
   WritingSkillView,
   poolDisplayName,
-  useSpellingSpeech,
   useTypingLiveStats,
 } from '../components/practice/PracticeSkillViews.jsx'
 import { API_BASE_URL } from '../constants/api'
@@ -46,6 +45,9 @@ const skillDisplayLabel = (skill) => {
   }
   if (skill === 'writing') {
     return 'Writing · Paragraph'
+  }
+  if (skill === 'jiujitsu') {
+    return 'Jiu Jitsu · Knowledge'
   }
   return 'Practice'
 }
@@ -142,6 +144,37 @@ const evaluateFrustrationSignals = (tuningRows, sessionState) => {
 const DEFAULT_COACH_TITLE = "You're in your seat. That's the hardest part."
 const DEFAULT_COACH_BODY =
   'Take your time. Read it twice if you need to — there is no timer here.'
+
+/** Legacy typing grader sent metrics JSON here; never show that to learners. */
+const isTypingMetricsJsonString = (value) => {
+  if (typeof value !== 'string') {
+    return false
+  }
+  const trimmed = value.trim()
+  if (!trimmed.startsWith('{')) {
+    return false
+  }
+  try {
+    const parsed = JSON.parse(trimmed)
+    if (!parsed || typeof parsed !== 'object') {
+      return false
+    }
+    return 'wpm' in parsed && 'accuracy' in parsed
+  } catch {
+    return false
+  }
+}
+
+const coachBodyAfterAttempt = (skillName, rawExplanation) => {
+  if (skillName === 'typing') {
+    return ''
+  }
+  const trimmed = typeof rawExplanation === 'string' ? rawExplanation.trim() : ''
+  if (trimmed.length === 0 || isTypingMetricsJsonString(trimmed)) {
+    return ''
+  }
+  return trimmed
+}
 
 const COACH_TTS_MAX_CHARS = 2000
 
@@ -327,6 +360,11 @@ const PracticePage = () => {
     return typeof t === 'string' ? t : ''
   }, [currentItem])
 
+  const readingBookAttribution = useMemo(() => {
+    const a = currentItem?.metadata?.book_attribution
+    return typeof a === 'string' ? a.trim() : ''
+  }, [currentItem])
+
   const readingQuestions = useMemo(() => {
     const q = currentItem?.metadata?.questions
     return Array.isArray(q) ? q : []
@@ -360,8 +398,6 @@ const PracticePage = () => {
     }
     return Boolean(window.SpeechRecognition || window.webkitSpeechRecognition)
   }, [])
-
-  useSpellingSpeech(spellingWord, currentItem?.item_id, ttsVoice)
 
   const { liveWpm, liveAccuracy } = useTypingLiveStats(answer, promptText, itemRenderedAtMs)
 
@@ -404,7 +440,7 @@ const PracticePage = () => {
         return
       }
       const narrative = [title, body].filter(Boolean).join('. ')
-      let text = `Coach says: ${narrative}`.replace(/\s+/g, ' ').trim()
+      let text = narrative.replace(/\s+/g, ' ').trim()
       if (text.length > COACH_TTS_MAX_CHARS) {
         text = text.slice(0, COACH_TTS_MAX_CHARS)
       }
@@ -758,8 +794,10 @@ const PracticePage = () => {
           : wasCorrect
             ? 'Nice work — that one is correct.'
             : 'Not quite — let us look at it together.'
-      const explanationText =
-        typeof payload.explanation === 'string' ? payload.explanation : ''
+      const explanationText = coachBodyAfterAttempt(
+        safeSkillName,
+        typeof payload.explanation === 'string' ? payload.explanation : '',
+      )
       setCoachState({
         tone: wasCorrect ? 'correct' : 'incorrect',
         label: wasCorrect ? '✓ Coach says' : '↺ Coach says',
@@ -861,7 +899,8 @@ const PracticePage = () => {
     }
   }
 
-  const hintEligible = safeSkillName === 'math' || safeSkillName === 'reading'
+  const hintEligible =
+    safeSkillName === 'math' || safeSkillName === 'reading' || safeSkillName === 'jiujitsu'
 
   const handleHint = async () => {
     if (!currentItem || isBusy || !hintEligible) {
@@ -908,7 +947,7 @@ const PracticePage = () => {
           : "Let's slow it down. Read the question one more time and tell me what you know first."
       setCoachState({
         tone: 'hint',
-        label: "Let's break it smaller",
+        label: 'One step at a time',
         title: 'Try this next.',
         body: hintText,
       })
@@ -922,6 +961,49 @@ const PracticePage = () => {
       })
     } finally {
       setIsLoadingHint(false)
+    }
+  }
+
+  const handleStuckClick = async () => {
+    if (!currentItem || isBusy) {
+      return
+    }
+
+    if (hintEligible) {
+      await handleHint()
+      return
+    }
+
+    if (safeSkillName === 'spelling' && spellingWord.trim().length > 0) {
+      const w = spellingWord.trim()
+      const first = w.slice(0, 1).toUpperCase()
+      setCoachState({
+        tone: 'hint',
+        label: 'One step at a time',
+        title: 'Spell it one piece at a time.',
+        body: `This word has ${w.length} letters. It starts with “${first}”. Tap Hear again, say the sounds slowly, then try typing again.`,
+      })
+      return
+    }
+
+    if (safeSkillName === 'typing') {
+      setCoachState({
+        tone: 'hint',
+        label: 'One step at a time',
+        title: 'Chunk the sentence.',
+        body: 'Type the first few words, then the next group. You can delete and rebuild—this is practice.',
+      })
+      return
+    }
+
+    if (safeSkillName === 'writing') {
+      setCoachState({
+        tone: 'hint',
+        label: 'One step at a time',
+        title: 'Start with one sentence.',
+        body: 'Answer the prompt with just your first sentence. When that feels okay, add the next.',
+      })
+      return
     }
   }
 
@@ -1030,6 +1112,23 @@ const PracticePage = () => {
       )
     }
 
+    if (safeSkillName === 'jiujitsu') {
+      return (
+        <MathSkillView
+          currentItem={currentItem}
+          structuredSteps={structuredSteps}
+          promptText={promptText}
+          isBusy={isBusy}
+          answer={answer}
+          onAnswerChange={setAnswer}
+          onKeyDown={handleKeyDown}
+          inputRef={inputRef}
+          inputDisabled={inputDisabled}
+          voiceMathEnabled={false}
+        />
+      )
+    }
+
     if (safeSkillName === 'reading') {
       return (
         <ReadingSkillView
@@ -1037,6 +1136,7 @@ const PracticePage = () => {
           questionText={currentReadingQuestionText}
           readingQuestionIndex={readingQuestionIndex}
           passageTitle={readingTitle}
+          bookAttribution={readingBookAttribution}
           answer={answer}
           onAnswerChange={setAnswer}
           onKeyDown={handleKeyDown}
@@ -1050,6 +1150,7 @@ const PracticePage = () => {
       return (
         <SpellingSkillView
           poolLabel={spellingPoolLabel}
+          wordToSpell={spellingWord}
           answer={answer}
           onAnswerChange={setAnswer}
           onKeyDown={handleKeyDown}
@@ -1176,17 +1277,16 @@ const PracticePage = () => {
 
             <div className="stuck-row">
               <span>Brain feeling foggy?</span>
-            <button
-              type="button"
-              className="stuck-btn"
-              onClick={hintEligible ? handleHint : speakSpellingWord}
-              disabled={!currentItem || isBusy || (hintEligible ? false : !spellingWord)}
-            >
-              {hintEligible
-                ? 'I&apos;m stuck — break it smaller'
-                : 'Replay word'}
-            </button>
-          </div>
+              <button
+                type="button"
+                className="stuck-btn"
+                onClick={handleStuckClick}
+                disabled={!currentItem || isBusy}
+                aria-label="Stuck? Get help with just one small step instead of the whole thing at once"
+              >
+                Stuck? Help one step at a time
+              </button>
+            </div>
           </div>
         </div>
 

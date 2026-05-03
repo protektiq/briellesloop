@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { claudeClient, claudeModel } from "./claude.js";
 import { query } from "../db.js";
+import { normalizeSkillsTableId } from "../utils/postgres-ids.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -668,16 +669,14 @@ export const ensureMathQueueItems = async (studentId, mathSkillId, requiredCount
   if (typeof studentId !== "string" || !UUID_REGEX.test(studentId)) {
     throw new Error("studentId must be a valid UUID.");
   }
-  if (!Number.isInteger(mathSkillId) || mathSkillId < 1) {
-    throw new Error("mathSkillId must be a positive integer.");
-  }
+  const mathSkillPk = normalizeSkillsTableId(mathSkillId, "mathSkillId");
   if (!Number.isInteger(requiredCount) || requiredCount < 1 || requiredCount > 20) {
     throw new Error("requiredCount must be an integer between 1 and 20.");
   }
 
   const studentContext = await buildStudentContextForMath(studentId);
   const mathLevel = studentContext.math_level;
-  const eligible = await countQueueEligibleMathItems(studentId, mathSkillId, mathLevel);
+  const eligible = await countQueueEligibleMathItems(studentId, mathSkillPk, mathLevel);
   const shortfall = Math.max(0, requiredCount - eligible);
   if (shortfall === 0) {
     return { generated: 0, eligibleBefore: eligible, eligibleAfter: eligible };
@@ -691,7 +690,7 @@ export const ensureMathQueueItems = async (studentId, mathSkillId, requiredCount
   const generated = await Promise.all(generationPromises);
 
   for (const item of generated) {
-    await insertGeneratedItem(studentId, mathSkillId, mathLevel, item);
+    await insertGeneratedItem(studentId, mathSkillPk, mathLevel, item);
   }
 
   return {
@@ -797,22 +796,20 @@ export const ensureWritingQueueItems = async (studentId, writingSkillId, require
   if (typeof studentId !== "string" || !UUID_REGEX.test(studentId)) {
     throw new Error("studentId must be a valid UUID.");
   }
-  if (!Number.isInteger(writingSkillId) || writingSkillId < 1) {
-    throw new Error("writingSkillId must be a positive integer.");
-  }
+  const writingSkillPk = normalizeSkillsTableId(writingSkillId, "writingSkillId");
   if (!Number.isInteger(requiredCount) || requiredCount < 1 || requiredCount > 5) {
     throw new Error("requiredCount must be an integer between 1 and 5.");
   }
 
   const studentContext = await buildStudentContextForWriting(studentId);
   const writingLevel = studentContext.writing_level;
-  const eligible = await countQueueEligibleWritingItems(studentId, writingSkillId, writingLevel);
+  const eligible = await countQueueEligibleWritingItems(studentId, writingSkillPk, writingLevel);
   const shortfall = Math.max(0, requiredCount - eligible);
   if (shortfall === 0) {
     return { generated: 0, eligibleBefore: eligible, eligibleAfter: eligible };
   }
 
-  const templateRows = await fetchWritingTemplateRows(writingSkillId, writingLevel);
+  const templateRows = await fetchWritingTemplateRows(writingSkillPk, writingLevel);
   if (templateRows.length === 0) {
     throw new Error("No writing prompt templates available for the student's level.");
   }
@@ -827,7 +824,7 @@ export const ensureWritingQueueItems = async (studentId, writingSkillId, require
   }
 
   for (const item of generatedItems) {
-    await insertGeneratedWritingItem(studentId, writingSkillId, writingLevel, item);
+    await insertGeneratedWritingItem(studentId, writingSkillPk, writingLevel, item);
   }
 
   return {

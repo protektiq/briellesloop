@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { generateHint, generateReadingHint } from "../services/grader.js";
+import { generateHint, generateJiujitsuHint, generateReadingHint } from "../services/grader.js";
 import { query } from "../db.js";
 
 const router = Router();
@@ -114,9 +114,13 @@ router.post("/hint", async (req, res, next) => {
     }
 
     const itemRow = itemResult.rows[0];
-    if (itemRow.skill_name !== "math" && itemRow.skill_name !== "reading") {
+    if (
+      itemRow.skill_name !== "math" &&
+      itemRow.skill_name !== "reading" &&
+      itemRow.skill_name !== "jiujitsu"
+    ) {
       return res.status(400).json({
-        error: "Hints are available for math and reading items only.",
+        error: "Hints are available for math, reading, and jiujitsu items only.",
       });
     }
 
@@ -142,6 +146,8 @@ router.post("/hint", async (req, res, next) => {
     try {
       if (itemRow.skill_name === "reading") {
         hint = await generateReadingHint(itemRow, responseSoFar, readingQuestionIndex);
+      } else if (itemRow.skill_name === "jiujitsu") {
+        hint = await generateJiujitsuHint(itemRow, responseSoFar);
       } else {
         hint = await generateHint(itemRow, responseSoFar);
       }

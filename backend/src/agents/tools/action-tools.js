@@ -547,6 +547,107 @@ export const handleWriteWeeklyInsight = async (input, ctx) => {
   }
 };
 
+const MAX_IEP_GOAL_CHARS = 8000;
+
+export const handleProposeIepGoalUpdate = async (input, ctx) => {
+  const skillId = Number(input.skill_id);
+  if (!Number.isInteger(skillId) || skillId < 1) {
+    throw new Error("skill_id must be a positive integer.");
+  }
+  const proposed =
+    typeof input.proposed_goal_text === "string" ? input.proposed_goal_text.trim() : "";
+  if (proposed.length < 4) {
+    throw new Error("proposed_goal_text must be at least 4 characters.");
+  }
+  if (proposed.length > MAX_IEP_GOAL_CHARS) {
+    throw new Error(`proposed_goal_text must be at most ${MAX_IEP_GOAL_CHARS} characters.`);
+  }
+  const rationale =
+    typeof input.rationale === "string" ? input.rationale.trim().slice(0, 4000) : "";
+
+  const skill = await query(`SELECT id, iep_goal_text FROM skills WHERE id = $1 LIMIT 1`, [skillId]);
+  if (skill.rowCount === 0) {
+    throw new Error("Unknown skill_id.");
+  }
+  const currentText = skill.rows[0].iep_goal_text ?? "";
+  const beforeValue = { current: currentText };
+  const afterValue = { skill_id: skillId, proposed };
+
+  const actionId = await insertActionRow(query, {
+    agent_run_id: ctx.agentRunId,
+    action_type: "iep_goal_update",
+    target: `skills:iep_goal_text:${skillId}`,
+    before_value: beforeValue,
+    after_value: afterValue,
+    rationale,
+    requires_approval: true,
+    approved: null,
+    applied: false,
+  });
+
+  return {
+    ok: true,
+    pending_parent_approval: true,
+    action_id: actionId,
+    message:
+      "IEP goal update proposed. Parent must approve in Agent Activity before skills.iep_goal_text changes.",
+  };
+};
+
+export const handleProposeLevelOverride = async (input, ctx) => {
+  const studentId = assertUuid(input.student_id, "student_id");
+  const skillId = Number(input.skill_id);
+  if (!Number.isInteger(skillId) || skillId < 1) {
+    throw new Error("skill_id must be a positive integer.");
+  }
+  const newLevel = Number(input.new_level);
+  if (!Number.isInteger(newLevel) || newLevel < 1 || newLevel > 10) {
+    throw new Error("new_level must be an integer from 1 to 10.");
+  }
+  const rationale =
+    typeof input.rationale === "string" ? input.rationale.trim().slice(0, 4000) : "";
+
+  const ssl = await query(
+    `
+      SELECT level
+      FROM student_skill_levels
+      WHERE student_id = $1::uuid AND skill_id = $2
+      LIMIT 1
+    `,
+    [studentId, skillId],
+  );
+  if (ssl.rowCount === 0) {
+    throw new Error("No student_skill_levels row for this student and skill.");
+  }
+  const currentLevel = Number(ssl.rows[0].level);
+  if (!Number.isFinite(currentLevel)) {
+    throw new Error("Could not read current level.");
+  }
+
+  const beforeValue = { current: currentLevel };
+  const afterValue = { student_id: studentId, skill_id: skillId, proposed: newLevel };
+
+  const actionId = await insertActionRow(query, {
+    agent_run_id: ctx.agentRunId,
+    action_type: "level_override",
+    target: `student_skill_levels:${skillId}`,
+    before_value: beforeValue,
+    after_value: afterValue,
+    rationale,
+    requires_approval: true,
+    approved: null,
+    applied: false,
+  });
+
+  return {
+    ok: true,
+    pending_parent_approval: true,
+    action_id: actionId,
+    message:
+      "Level override proposed. Parent must approve in Agent Activity before student_skill_levels updates.",
+  };
+};
+
 export const handleFlagIepConcern = async (input, ctx) => {
   const studentId = assertUuid(input.student_id, "student_id");
   let skillId = null;
@@ -622,13 +723,51 @@ export const handleFlagIepConcern = async (input, ctx) => {
   }
 };
 
+const AGENT_NOTE_TYPES = new Set(["observation", "flag", "suggestion"]);
+
+export const handleWriteAgentNote = async (input, ctx) => {
+  const fromAgentId = ctx?.agentId;
+  if (typeof fromAgentId !== "number" || !Number.isInteger(fromAgentId) || fromAgentId < 1) {
+    throw new Error("Agent context missing for write_agent_note.");
+  }
+  const noteType =
+    typeof input.note_type === "string" ? input.note_type.trim().toLowerCase() : "";
+  if (!AGENT_NOTE_TYPES.has(noteType)) {
+    throw new Error("note_type must be observation, flag, or suggestion.");
+  }
+  const content = input.content;
+  if (content === null || typeof content !== "object" || Array.isArray(content)) {
+    throw new Error("content must be a JSON object.");
+  }
+  let toAgentId = null;
+  if (input.to_agent_id !== undefined && input.to_agent_id !== null) {
+    const n = Number(input.to_agent_id);
+    if (!Number.isInteger(n) || n < 1) {
+      throw new Error("to_agent_id must be a positive integer or null for broadcast.");
+    }
+    toAgentId = n;
+  }
+  const r = await query(
+    `
+      INSERT INTO agent_notes (from_agent_id, to_agent_id, note_type, content)
+      VALUES ($1::int, $2::int, $3, $4::jsonb)
+      RETURNING id
+    `,
+    [fromAgentId, toAgentId, noteType, JSON.stringify(content)],
+  );
+  return { success: true, id: r.rows[0].id };
+};
+
 const actionToolHandlers = {
   propose_tuning_change: handleProposeTuningChange,
+  propose_iep_goal_update: handleProposeIepGoalUpdate,
+  propose_level_override: handleProposeLevelOverride,
   curate_queue: handleCurateQueue,
   request_new_items: handleRequestNewItems,
   update_frustration_signals: handleUpdateFrustrationSignals,
   write_weekly_insight: handleWriteWeeklyInsight,
   flag_iep_concern: handleFlagIepConcern,
+  write_agent_note: handleWriteAgentNote,
 };
 
 export const runActionTool = async (name, input, ctx) => {
@@ -735,6 +874,52 @@ export const actionToolSchemas = [
         concern_text: { type: "string" },
       },
       required: ["student_id", "concern_text"],
+    },
+  },
+  {
+    name: "propose_iep_goal_update",
+    description:
+      "Propose updating skills.iep_goal_text for one skill to align with the uploaded IEP. Requires parent approval.",
+    input_schema: {
+      type: "object",
+      properties: {
+        skill_id: { type: "integer", description: "skills.id" },
+        proposed_goal_text: { type: "string" },
+        rationale: { type: "string" },
+      },
+      required: ["skill_id", "proposed_goal_text", "rationale"],
+    },
+  },
+  {
+    name: "propose_level_override",
+    description:
+      "Propose changing student_skill_levels.level for one skill. Requires parent approval; use only when performance clearly warrants it.",
+    input_schema: {
+      type: "object",
+      properties: {
+        student_id: { type: "string" },
+        skill_id: { type: "integer" },
+        new_level: { type: "integer", description: "1–10" },
+        rationale: { type: "string" },
+      },
+      required: ["student_id", "skill_id", "new_level", "rationale"],
+    },
+  },
+  {
+    name: "write_agent_note",
+    description:
+      "Write a note to a specific agent by id, or broadcast (to_agent_id null) for all agents to read.",
+    input_schema: {
+      type: "object",
+      properties: {
+        to_agent_id: {
+          type: "integer",
+          description: "Target agents.id; omit for broadcast to all agents",
+        },
+        note_type: { type: "string", enum: ["observation", "flag", "suggestion"] },
+        content: { type: "object", description: "Structured note payload (JSON object)" },
+      },
+      required: ["note_type", "content"],
     },
   },
 ];

@@ -13,12 +13,14 @@ const HINT_PROMPT_PATH = path.resolve(__dirname, "..", "prompts", "math-hint.md"
 const READING_GRADER_PROMPT_PATH = path.resolve(__dirname, "..", "prompts", "reading-grader.md");
 const READING_HINT_PROMPT_PATH = path.resolve(__dirname, "..", "prompts", "reading-hint.md");
 const WRITING_GRADER_PROMPT_PATH = path.resolve(__dirname, "..", "prompts", "writing-grader.md");
+const JIUJITSU_HINT_PROMPT_PATH = path.resolve(__dirname, "..", "prompts", "jiujitsu-hint.md");
 
 const GRADER_PURPOSE = "math_grade";
 const HINT_PURPOSE = "math_hint";
 const READING_GRADER_PURPOSE = "reading_grade";
 const READING_HINT_PURPOSE = "reading_hint";
 const WRITING_GRADER_PURPOSE = "writing_grade";
+const JIUJITSU_HINT_PURPOSE = "jiujitsu_hint";
 
 const GRADER_MAX_TOKENS = 400;
 const HINT_MAX_TOKENS = 400;
@@ -439,6 +441,65 @@ const gradeSpellingLocal = (item, studentResponse, responseSeconds) => {
   };
 };
 
+const stripJiujitsuNoise = (value) => {
+  let s = value.normalize("NFKC").trim().toLowerCase();
+  s = s.replace(/^[“”"']+|[“”"']+$/g, "");
+  s = s.replace(/^(answer|choice|option|letter)\s*[:#.)-]?\s*/i, "");
+  s = s.replace(/[.!?,;:)\]}]+$/g, "");
+  return s.trim();
+};
+
+const extractJiujitsuMcqLetter = (value) => {
+  const stripped = stripJiujitsuNoise(value);
+  if (stripped.length === 1 && /^[a-d]$/i.test(stripped)) {
+    return stripped;
+  }
+  const boundary = stripped.match(/\b([a-d])\b/i);
+  if (boundary) {
+    return boundary[1].toLowerCase();
+  }
+  const suffix = stripped.match(/([a-d])\s*[.)]?\s*$/i);
+  if (suffix) {
+    return suffix[1].toLowerCase();
+  }
+  return stripped;
+};
+
+const gradeJiujitsuLocal = (item, studentResponse, responseSeconds) => {
+  const cleanResponse = sanitizeStudentResponse(studentResponse);
+  const cleanSeconds = sanitizeResponseSeconds(responseSeconds);
+  const expectedRaw =
+    typeof item.answer?.text === "string"
+      ? item.answer.text
+      : typeof item.answer === "string"
+        ? item.answer
+        : "";
+  if (!expectedRaw || expectedRaw.trim().length === 0) {
+    throw new Error("Jiu-jitsu item missing expected answer.");
+  }
+
+  const expectedNorm = stripJiujitsuNoise(expectedRaw);
+  const studentNorm = stripJiujitsuNoise(cleanResponse);
+  const studentLetter = extractJiujitsuMcqLetter(cleanResponse);
+
+  let correct = false;
+  if (expectedNorm.length === 1 && /^[a-d]$/i.test(expectedNorm)) {
+    correct = studentLetter === expectedNorm || studentNorm === expectedNorm;
+  } else {
+    correct = studentNorm === expectedNorm;
+  }
+
+  const feedback = correct
+    ? "That matches the best answer here—nice recall."
+    : "Not quite. Read each choice slowly and pick the one that fits safety, respect, or the definition best.";
+  return {
+    correct,
+    feedback: feedback.slice(0, FEEDBACK_MAX_LEN),
+    explanation: correct ? "" : "Compare the stem to each line before you choose.",
+    response_time_seconds: cleanSeconds,
+  };
+};
+
 const gradeTypingLocal = (item, studentResponse, responseSeconds) => {
   const cleanResponse = sanitizeStudentResponse(studentResponse);
   const cleanSeconds = sanitizeResponseSeconds(responseSeconds);
@@ -461,19 +522,17 @@ const gradeTypingLocal = (item, studentResponse, responseSeconds) => {
   const grossWpm = minutes > 0 ? cleanResponse.length / 5 / minutes : 0;
   const roundedWpm = Math.round(grossWpm * 10) / 10;
   const roundedAcc = Math.round(accuracy * 1000) / 1000;
-  const metrics = {
-    correct,
-    wpm: roundedWpm,
-    accuracy: roundedAcc,
-    distance: dist,
-  };
+  const pctMatch = Math.round(roundedAcc * 100);
   const feedback = correct
-    ? `Strong typing — about ${roundedWpm} WPM, ${Math.round(roundedAcc * 100)}% match.`
-    : `Keep practicing — ${Math.round(roundedAcc * 100)}% character match (goal 80%). About ${roundedWpm} WPM.`;
+    ? `Strong typing — about ${roundedWpm} WPM, ${pctMatch}% match.`
+    : `Keep practicing — ${pctMatch}% character match (goal 80%). About ${roundedWpm} WPM.`;
+  const explanation = correct
+    ? `That run counted as correct: about ${pctMatch}% of characters matched the goal line.`
+    : `About ${pctMatch}% of characters matched so far (${dist} letter edits from the goal). Compare slowly to the sentence above, then try again.`;
   return {
     correct,
     feedback: feedback.slice(0, FEEDBACK_MAX_LEN),
-    explanation: JSON.stringify(metrics).slice(0, EXPLANATION_MAX_LEN),
+    explanation: explanation.slice(0, EXPLANATION_MAX_LEN),
     response_time_seconds: cleanSeconds,
   };
 };
@@ -625,6 +684,9 @@ export const gradeAttempt = async (item, studentResponse, responseSeconds, optio
   if (skillName === "writing") {
     return gradeWritingAttempt(item, studentResponse, responseSeconds);
   }
+  if (skillName === "jiujitsu") {
+    return gradeJiujitsuLocal(item, studentResponse, responseSeconds);
+  }
   return gradeMathAttempt(item, studentResponse, responseSeconds);
 };
 
@@ -705,6 +767,46 @@ export const generateReadingHint = async (item, responseSoFar, readingQuestionIn
 
   await recordGeneration({
     purpose: READING_HINT_PURPOSE,
+    inputPrompt: userMessage,
+    inputHash,
+    output: validated,
+    tokensIn,
+    tokensOut,
+  });
+
+  return validated;
+};
+
+export const generateJiujitsuHint = async (item, responseSoFar) => {
+  const sanitizedItem = sanitizeItem(item);
+  const cleanSoFar = sanitizeResponseSoFar(responseSoFar);
+
+  const systemPrompt = await loadPrompt(JIUJITSU_HINT_PROMPT_PATH, "jiujitsu-hint.md");
+  const userMessage = JSON.stringify(
+    {
+      prompt: sanitizedItem.prompt,
+      expected_answer: sanitizedItem.expected_answer,
+      response_so_far: cleanSoFar,
+    },
+    null,
+    2,
+  );
+  const inputHash = hashInput(JIUJITSU_HINT_PURPOSE, systemPrompt, userMessage);
+
+  const cached = await findCachedGeneration(JIUJITSU_HINT_PURPOSE, inputHash);
+  if (cached) {
+    try {
+      return validateHintOutput(cached);
+    } catch {
+      // fall through
+    }
+  }
+
+  const { parsed, tokensIn, tokensOut } = await callClaude(systemPrompt, userMessage, HINT_MAX_TOKENS);
+  const validated = validateHintOutput(parsed);
+
+  await recordGeneration({
+    purpose: JIUJITSU_HINT_PURPOSE,
     inputPrompt: userMessage,
     inputHash,
     output: validated,

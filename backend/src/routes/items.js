@@ -20,6 +20,7 @@ import {
   utcMondayOfContainingWeek,
 } from "../services/dashboard-week.js";
 import { getClient, query } from "../db.js";
+import { normalizeSkillsTableId } from "../utils/postgres-ids.js";
 
 const router = Router();
 const UUID_REGEX =
@@ -139,44 +140,25 @@ router.get("/queue/:skill_id", async (req, res, next) => {
 
     const tuning = await fetchStudentTuning(sessionContext.student_id);
     const requestedCount = getSessionItemCountForSkill(tuning, sessionContext.skill_name);
+    const skillPrimaryKey = normalizeSkillsTableId(sessionContext.skill_id, "session.skill_id");
 
     if (sessionContext.skill_name === "math") {
-      await ensureMathQueueItems(
-        sessionContext.student_id,
-        sessionContext.skill_id,
-        requestedCount,
-      );
+      await ensureMathQueueItems(sessionContext.student_id, skillPrimaryKey, requestedCount);
     }
     if (sessionContext.skill_name === "reading") {
-      await ensureReadingQueueItems(
-        sessionContext.student_id,
-        sessionContext.skill_id,
-        requestedCount,
-      );
+      await ensureReadingQueueItems(sessionContext.student_id, skillPrimaryKey, requestedCount);
     }
     if (sessionContext.skill_name === "typing") {
-      await ensureTypingQueueItems(
-        sessionContext.student_id,
-        sessionContext.skill_id,
-        requestedCount,
-      );
+      await ensureTypingQueueItems(sessionContext.student_id, skillPrimaryKey, requestedCount);
     }
     if (sessionContext.skill_name === "spelling") {
-      await ensureSpellingQueueItems(
-        sessionContext.student_id,
-        sessionContext.skill_id,
-        requestedCount,
-      );
+      await ensureSpellingQueueItems(sessionContext.student_id, skillPrimaryKey, requestedCount);
     }
     if (sessionContext.skill_name === "writing") {
-      await ensureWritingQueueItems(
-        sessionContext.student_id,
-        sessionContext.skill_id,
-        requestedCount,
-      );
+      await ensureWritingQueueItems(sessionContext.student_id, skillPrimaryKey, requestedCount);
     }
 
-    const queue = await buildSessionQueue(sessionContext.student_id, sessionContext.skill_id, requestedCount);
+    const queue = await buildSessionQueue(sessionContext.student_id, skillPrimaryKey, requestedCount);
 
     return res.json({
       session_id: sessionContext.id,

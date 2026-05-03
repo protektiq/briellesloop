@@ -1,11 +1,19 @@
 import { useEffect, useMemo, useState } from 'react'
 
 const MOOD_OPTIONS = [
-  { emoji: '😢', score: 1, label: 'Very sad' },
-  { emoji: '😟', score: 3, label: 'Worried' },
-  { emoji: '😐', score: 5, label: 'Neutral' },
-  { emoji: '🙂', score: 6, label: 'Okay' },
-  { emoji: '😄', score: 8, label: 'Great' },
+  { emoji: '😭', score: 1, label: 'Very upset' },
+  { emoji: '😢', score: 2, label: 'Sad' },
+  { emoji: '🥺', score: 3, label: 'A little down' },
+  { emoji: '😟', score: 4, label: 'Worried' },
+  { emoji: '😤', score: 5, label: 'Frustrated' },
+  { emoji: '😴', score: 5, label: 'Sleepy or tired' },
+  { emoji: '😐', score: 6, label: 'Neutral' },
+  { emoji: '🙂', score: 7, label: 'Okay' },
+  { emoji: '😊', score: 8, label: 'Happy' },
+  { emoji: '😌', score: 8, label: 'Calm and good' },
+  { emoji: '😄', score: 9, label: 'Great' },
+  { emoji: '🤩', score: 10, label: 'Super excited' },
+  { emoji: '🥳', score: 10, label: 'Celebratory' },
 ]
 
 const clampMoodScore = (value) => {
@@ -83,7 +91,7 @@ const MoodCheckIn = ({ onChange, initialEmoji = null, initialScore = null }) => 
   return (
     <section className="mood-block" aria-label="Mood check-in">
       <h3>How are you feeling right now?</h3>
-      <div className="emoji-row">
+      <div className="emoji-row mood-emoji-row-wide">
         {MOOD_OPTIONS.map((option) => (
           <button
             key={option.emoji}

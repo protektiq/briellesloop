@@ -22,3 +22,6 @@ build/
 # Supabase local volumes and generated state
 supabase/.temp/
 supabase/volumes/
+
+# Local IEP PDF uploads (metadata paths live in Postgres)
+backend/data/iep/*.pdf

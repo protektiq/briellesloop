@@ -5,12 +5,14 @@ import { runCalibrationAgent } from "../agents/calibration-agent.js";
 import { runContentAgent } from "../agents/content-agent.js";
 import { runFrustrationAgent } from "../agents/frustration-agent.js";
 import { runInsightAgent } from "../agents/insight-agent.js";
+import { runCurriculumAgent } from "../agents/curriculum-agent.js";
 
 const RUNNERS = {
   calibration: runCalibrationAgent,
   content: runContentAgent,
   frustration: runFrustrationAgent,
   insight: runInsightAgent,
+  curriculum: runCurriculumAgent,
 };
 
 const parseStudentIdQuery = (queryValue) => {
@@ -87,4 +89,27 @@ export const dispatchManualAgentRun = async (agentName, studentIdFromQuery) => {
     throw new Error("No student found.");
   }
   return runner(studentId);
+};
+
+/**
+ * @param {string} agentName
+ * @param {string | undefined} studentIdFromQuery
+ * @param {{ dateFrom: string, dateTo: string }} range - calendar dates YYYY-MM-DD (UTC day bounds)
+ */
+export const dispatchSimulateAgentRun = async (agentName, studentIdFromQuery, range) => {
+  const runner = RUNNERS[agentName];
+  if (!runner) {
+    throw new Error(`Unknown agent: ${agentName}`);
+  }
+  const studentId =
+    (await resolveStudentId(parseStudentIdQuery(studentIdFromQuery))) ??
+    (await resolveStudentId());
+  if (!studentId) {
+    throw new Error("No student found.");
+  }
+  const simulationStart = `${range.dateFrom}T00:00:00.000Z`;
+  const endDay = new Date(`${range.dateTo}T00:00:00.000Z`);
+  endDay.setUTCDate(endDay.getUTCDate() + 1);
+  const simulationEnd = endDay.toISOString();
+  return runner(studentId, { dryRun: true, simulationStart, simulationEnd });
 };

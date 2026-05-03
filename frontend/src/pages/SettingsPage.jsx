@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { API_BASE_URL, FONT_STEP_STORAGE_KEY, FONT_STEPS } from '../constants/api'
 import {
   applyFontStepToDocument,
@@ -68,6 +68,14 @@ const SettingsPage = () => {
   const [shareGenerateBusy, setShareGenerateBusy] = useState(false)
   const [shareCopyMessage, setShareCopyMessage] = useState('')
   const [shareRevokeBusy, setShareRevokeBusy] = useState('')
+
+  const [iepDoc, setIepDoc] = useState(null)
+  const [iepDocLoading, setIepDocLoading] = useState(false)
+  const [iepDocError, setIepDocError] = useState('')
+  const [iepUploadBusy, setIepUploadBusy] = useState(false)
+  const [iepUploadMessage, setIepUploadMessage] = useState('')
+  const [iepUploadError, setIepUploadError] = useState('')
+  const iepFileInputRef = useRef(null)
 
   useEffect(() => {
     let cancelled = false
@@ -223,6 +231,127 @@ const SettingsPage = () => {
   useEffect(() => {
     void loadShareTokens()
   }, [loadShareTokens])
+
+  useEffect(() => {
+    if (typeof studentId !== 'string' || studentId.trim().length === 0) {
+      setIepDoc(null)
+      return
+    }
+
+    let cancelled = false
+
+    const loadIepDocument = async () => {
+      try {
+        setIepDocLoading(true)
+        setIepDocError('')
+        const qs = new URLSearchParams()
+        qs.set('student_id', studentId.trim())
+        const response = await fetch(`${API_BASE_URL}/api/iep/document?${qs.toString()}`)
+        const data = await response.json().catch(() => ({}))
+        if (cancelled) {
+          return
+        }
+        if (!response.ok) {
+          throw new Error(data.error ?? `Could not load IEP document (${response.status})`)
+        }
+        if (data.document && typeof data.document.id === 'string') {
+          setIepDoc({
+            id: data.document.id,
+            uploaded_at: data.document.uploaded_at,
+            extracted_text_preview:
+              typeof data.document.extracted_text_preview === 'string'
+                ? data.document.extracted_text_preview
+                : '',
+          })
+        } else {
+          setIepDoc(null)
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setIepDocError(err instanceof Error ? err.message : 'IEP document unavailable.')
+          setIepDoc(null)
+        }
+      } finally {
+        if (!cancelled) {
+          setIepDocLoading(false)
+        }
+      }
+    }
+
+    void loadIepDocument()
+    return () => {
+      cancelled = true
+    }
+  }, [studentId])
+
+  const handleIepUploadSubmit = useCallback(
+    async (event) => {
+      event.preventDefault()
+      setIepUploadMessage('')
+      setIepUploadError('')
+      const input = iepFileInputRef.current
+      const file = input?.files?.[0]
+      if (!file || !(file instanceof File)) {
+        setIepUploadError('Choose a PDF file first.')
+        return
+      }
+      const name = typeof file.name === 'string' ? file.name.toLowerCase() : ''
+      if (!name.endsWith('.pdf')) {
+        setIepUploadError('Only .pdf files are accepted.')
+        return
+      }
+      if (file.type !== 'application/pdf' && file.type !== 'application/x-pdf') {
+        setIepUploadError('The file must be a PDF.')
+        return
+      }
+      if (file.size > 10 * 1024 * 1024) {
+        setIepUploadError('PDF must be at most 10 MB.')
+        return
+      }
+      if (typeof studentId !== 'string' || studentId.trim().length === 0) {
+        setIepUploadError('Student is not loaded yet. Try again in a moment.')
+        return
+      }
+
+      try {
+        setIepUploadBusy(true)
+        const formData = new FormData()
+        formData.append('iep_pdf', file)
+        formData.append('student_id', studentId.trim())
+        const response = await fetch(`${API_BASE_URL}/api/iep/upload`, {
+          method: 'POST',
+          body: formData,
+        })
+        const data = await response.json().catch(() => ({}))
+        if (!response.ok) {
+          const msg =
+            typeof data.message === 'string'
+              ? data.message
+              : typeof data.error === 'string'
+                ? data.error
+                : `Upload failed (${response.status})`
+          throw new Error(msg)
+        }
+        if (typeof data.extracted_text_preview !== 'string') {
+          throw new Error('Invalid response from server.')
+        }
+        setIepUploadMessage('IEP uploaded. Extracted text preview is shown below.')
+        setIepDoc({
+          id: typeof data.id === 'string' ? data.id : '',
+          uploaded_at: data.uploaded_at ?? null,
+          extracted_text_preview: data.extracted_text_preview,
+        })
+        if (input) {
+          input.value = ''
+        }
+      } catch (err) {
+        setIepUploadError(err instanceof Error ? err.message : 'Upload failed.')
+      } finally {
+        setIepUploadBusy(false)
+      }
+    },
+    [studentId],
+  )
 
   useEffect(() => {
     let cancelled = false
@@ -686,6 +815,78 @@ const SettingsPage = () => {
             </button>
           </>
         )}
+      </div>
+
+      <div className="settings-card settings-card-wide" style={{ marginTop: 28 }}>
+        <h2 className="settings-title">Upload IEP Document</h2>
+        <p className="settings-lead">
+          Upload the current IEP as a PDF. Text is extracted and stored for the Curriculum Alignment
+          Agent. The file stays on this computer.
+        </p>
+        {typeof studentId === 'string' &&
+        studentId.trim().length > 0 &&
+        !iepDocLoading &&
+        !iepDoc ? (
+          <p className="settings-error" role="alert">
+            The Curriculum Agent cannot run without an IEP document.
+          </p>
+        ) : null}
+        {iepDocLoading ? (
+          <p role="status">Loading IEP document…</p>
+        ) : null}
+        {iepDocError ? (
+          <p className="settings-error" role="alert">
+            {iepDocError}
+          </p>
+        ) : null}
+        {iepDoc ? (
+          <div style={{ marginTop: 12 }}>
+            <p className="settings-status">
+              <strong>Current document</strong>
+            </p>
+            <p className="settings-lead" style={{ marginTop: 4 }}>
+              Uploaded:{' '}
+              {formatShareTs(iepDoc.uploaded_at)}
+            </p>
+            <p className="settings-lead" style={{ marginTop: 8, whiteSpace: 'pre-wrap' }}>
+              {iepDoc.extracted_text_preview && iepDoc.extracted_text_preview.length > 0
+                ? iepDoc.extracted_text_preview
+                : '(No text extracted — try another PDF or check the file.)'}
+            </p>
+          </div>
+        ) : null}
+        <form
+          className="settings-form"
+          style={{ marginTop: 16 }}
+          onSubmit={handleIepUploadSubmit}
+          aria-label="Upload IEP PDF"
+        >
+          <label className="settings-label" htmlFor="settings-iep-pdf-file">
+            PDF file
+          </label>
+          <input
+            id="settings-iep-pdf-file"
+            ref={iepFileInputRef}
+            className="settings-input"
+            type="file"
+            accept=".pdf,application/pdf"
+            disabled={iepUploadBusy}
+            aria-label="Choose IEP PDF file"
+          />
+          {iepUploadError ? (
+            <p className="settings-error" role="alert">
+              {iepUploadError}
+            </p>
+          ) : null}
+          {iepUploadMessage ? (
+            <p className="settings-success" role="status">
+              {iepUploadMessage}
+            </p>
+          ) : null}
+          <button type="submit" className="primary-btn settings-submit" disabled={iepUploadBusy}>
+            {iepUploadBusy ? 'Uploading…' : 'Upload IEP PDF'}
+          </button>
+        </form>
       </div>
 
       <div className="settings-card settings-card-wide" style={{ marginTop: 28 }}>

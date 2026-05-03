@@ -1,4 +1,5 @@
 import { query } from "../db.js";
+import { normalizeSkillsTableId } from "../utils/postgres-ids.js";
 
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -200,18 +201,18 @@ const queryNewPool = async (studentId, skillId, limit) => {
 
 export const buildSessionQueue = async (studentId, skillId, count) => {
   const safeStudentId = assertUuid(studentId, "studentId");
-  assertPositiveInteger(skillId, "skillId");
+  const safeSkillId = normalizeSkillsTableId(skillId, "skillId");
   assertPositiveInteger(count, "count");
 
-  const cachedQueue = await getCachedQueueIfAvailable(safeStudentId, skillId, count);
+  const cachedQueue = await getCachedQueueIfAvailable(safeStudentId, safeSkillId, count);
   if (cachedQueue.length > 0) {
     return cachedQueue.slice(0, count);
   }
 
   const ratioTargets = getRatioTargets(count);
-  const reviewPool = await queryPool(safeStudentId, skillId, [3, 4], count * 2);
-  const learningPool = await queryPool(safeStudentId, skillId, [1, 2], count * 2);
-  const newPool = await queryNewPool(safeStudentId, skillId, count * 2);
+  const reviewPool = await queryPool(safeStudentId, safeSkillId, [3, 4], count * 2);
+  const learningPool = await queryPool(safeStudentId, safeSkillId, [1, 2], count * 2);
+  const newPool = await queryNewPool(safeStudentId, safeSkillId, count * 2);
 
   const queue = [
     ...pullItems(reviewPool, ratioTargets.review),

@@ -4,13 +4,25 @@ import MoodCheckIn from '../components/MoodCheckIn'
 import SkillTile from '../components/SkillTile'
 import TodayPlanCard from '../components/TodayPlanCard'
 import { API_BASE_URL } from '../constants/api'
-const LOW_MOOD_EMOJIS = new Set(['😢', '😟'])
+import { useUiStore } from '../store/uiStore'
+
+const LOW_MOOD_EMOJIS = new Set(['😭', '😢', '🥺', '😟'])
 const SKILL_ICON_BY_NAME = {
   reading: '📖',
   math: '🔢',
   spelling: '✏️',
   typing: '⌨️',
   writing: '📝',
+  jiujitsu: '🥋',
+}
+
+const SKILL_DISPLAY_LABEL_BY_NAME = {
+  reading: 'Reading',
+  math: 'Math',
+  spelling: 'Spelling',
+  typing: 'Typing',
+  writing: 'Writing',
+  jiujitsu: 'Jiu Jitsu',
 }
 
 const clampNumber = (value, min, max, fallback) => {
@@ -81,6 +93,7 @@ const isUuid = (value) =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
 
 const TodayPage = () => {
+  const setStreakCount = useUiStore((state) => state.setStreakCount)
   const navigate = useNavigate()
   const [skills, setSkills] = useState([])
   const [selectedSkillName, setSelectedSkillName] = useState('')
@@ -117,6 +130,12 @@ const TodayPage = () => {
         setSuggestedSkillName(normalized.suggestedSkillName)
         if (normalized.studentId) {
           setStudentId(normalized.studentId)
+        }
+
+        const rawStreak = payload?.practice_streak_days
+        const streakParsed = Number.parseInt(String(rawStreak ?? '0'), 10)
+        if (Number.isInteger(streakParsed) && streakParsed >= 0) {
+          setStreakCount(streakParsed)
         }
 
         const preferredSkill = normalized.skills.find(
@@ -226,7 +245,11 @@ const TodayPage = () => {
 
       <div className="hero-right">
         <TodayPlanCard
-          skillName={selectedSkill?.name ?? 'Reading'}
+          skillName={
+            SKILL_DISPLAY_LABEL_BY_NAME[selectedSkill?.name] ??
+            selectedSkill?.name ??
+            'Reading'
+          }
           level={selectedSkill?.level ?? 1}
           durationMinutes={selectedSkill?.durationMinutes ?? 10}
           moodIsSet={mood.isSet}
@@ -248,7 +271,7 @@ const TodayPage = () => {
               <SkillTile
                 key={skill.name}
                 icon={SKILL_ICON_BY_NAME[skill.name] ?? '📘'}
-                name={skill.name}
+                name={SKILL_DISPLAY_LABEL_BY_NAME[skill.name] ?? skill.name}
                 level={skill.level}
                 durationMinutes={skill.durationMinutes}
                 selected={skill.name === selectedSkillName}

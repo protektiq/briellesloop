@@ -1,10 +1,39 @@
+import { useEffect } from 'react'
 import { NavLink } from 'react-router-dom'
+import { API_BASE_URL } from '../constants/api'
 import { useUiStore } from '../store/uiStore'
 
 const getLinkClassName = ({ isActive }) => (isActive ? 'nav-link active' : 'nav-link')
 
 const TopNav = () => {
   const streakCount = useUiStore((state) => state.streakCount)
+  const setStreakCount = useUiStore((state) => state.setStreakCount)
+
+  useEffect(() => {
+    let cancelled = false
+
+    const loadStreak = async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/dashboard/skills`)
+        const payload = await response.json().catch(() => ({}))
+        if (!response.ok || cancelled) {
+          return
+        }
+        const raw = payload?.practice_streak_days
+        const parsed = Number.parseInt(String(raw ?? '0'), 10)
+        if (Number.isInteger(parsed) && parsed >= 0) {
+          setStreakCount(parsed)
+        }
+      } catch {
+        /* keep current streak */
+      }
+    }
+
+    void loadStreak()
+    return () => {
+      cancelled = true
+    }
+  }, [setStreakCount])
 
   return (
     <header className="top-nav" aria-label="Primary">

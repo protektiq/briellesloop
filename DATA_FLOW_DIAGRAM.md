@@ -13,15 +13,21 @@ flowchart TD
   backendApi --> settingsApi[/api/settings/*]
   backendApi --> parentApi[/api/parent/*]
   backendApi --> shareApi[/api/share/*]
+  backendApi --> iepApi[/api/iep/*]
+
+  iepApi --> iepDocumentsTbl[iep_documents]
+  studentsTbl[students] --> iepDocumentsTbl
+  settingsPageIep[SettingsPage_IEP_upload] --> iepApi
+  frontendApp --> settingsPageIep
 
   shareApi --> shareTokensTbl[share_tokens]
-  shareTokensTbl --> studentsTbl[students]
+  shareTokensTbl --> studentsTbl
   settingsPageShare[SettingsShareTokens] --> shareApi
   teacherSharePage[TeacherDashboardShareRoute] --> shareApi
   frontendApp --> teacherSharePage
   frontendApp --> settingsPageShare
 
-  parentDashboard[ParentDashboard] --> studentsTbl[students]
+  parentDashboard[ParentDashboard] --> studentsTbl
   parentDashboard --> parentSettingsTbl[parent_settings]
   settingsApi --> parentSettingsTbl
   parentApi --> parentSettingsTbl
@@ -50,6 +56,8 @@ flowchart TD
   agentActionsTbl --> queueCacheTbl[next_session_queue]
   agentActionsTbl --> weeklyInsightsTbl[weekly_insights]
   agentActionsTbl --> iepConcernTbl[iep_concern_flags]
+  agentActionsTbl --> skillsTbl
+  agentRunners --> iepDocumentsTbl
   itemsApi --> queueCacheTbl
   sessionApi --> sessionsTbl
   itemsApi --> itemsTbl
@@ -67,12 +75,18 @@ flowchart TD
   agentsApi --> agentsTbl
   agentsApi --> agentRunsTbl
   agentsApi --> agentActionsTbl
+  agentsApi --> agentNotesTbl[agent_notes]
+  agentRunners --> agentNotesTbl
+  promptFiles[prompts_md_on_disk] --> agentRunners
+  agentsApi --> promptFiles
 ```
 
 ## Notes
 
+- **Jiu Jitsu (academic knowledge):** The `jiujitsu` skill appears in `skills` with seeded `jiujitsu_quiz` rows in `items`. The Today page, `/api/dashboard/skills`, session start, and `/api/items/queue/:skill` follow the same path as reading/math. Grading uses deterministic `gradeJiujitsuLocal` in `backend/src/services/grader.js`. Optional hints for jiujitsu items use `/api/ai/hint` with `generateJiujitsuHint` (see `backend/src/prompts/jiujitsu-hint.md`).
 - Core learning flow: `students` + `skills` drive session queueing, attempts, and item mastery updates.
-- Agent flow: **node-cron** (when `AGENT_SYSTEM_ENABLED` is not `false`) schedules runs per `agents.schedule_cron` and `agents.enabled`. Each run calls **Anthropic Messages** with tool-use; results go to `agent_runs` / `agent_actions`. Writes target `student_tuning`, `next_session_queue`, `weekly_insights`, and `iep_concern_flags`. Parent UI (`/parent`, `/parent/agents`) and `PATCH /api/agents/:name/enabled` control visibility and scheduling.
+- Agent flow: **node-cron** (when `AGENT_SYSTEM_ENABLED` is not `false`) schedules runs per `agents.schedule_cron` and `agents.enabled`. Each run calls **Anthropic Messages** with tool-use; results go to `agent_runs` / `agent_actions`. Writes target `student_tuning`, `next_session_queue`, `weekly_insights`, and `iep_concern_flags`. The **curriculum** agent (`0 6 * * 3`) reads `iep_documents` via tools and proposes `iep_goal_update` / `level_override` actions; **parent approval** applies updates to `skills.iep_goal_text` and `student_skill_levels`. Parent UI (`/parent`, `/parent/agents`) and `PATCH /api/agents/:name/enabled` control visibility and scheduling.
+- **Simulation & notes (FR-49+):** `POST /api/agents/:name/simulate` runs the same agent with `dry_run=true` on `agent_runs` (`status` → `simulation`): read tools query Postgres with a fixed UTC date window from the request; listed write tools return mocked `{ success, id, dry_run }` and **no** `agent_actions` rows. `GET /api/agents/notes` lists `agent_notes`; agents may call `read_agent_notes` / `write_agent_note` tools (writes go to `agent_notes`). Prompts load from `backend/src/agents/prompts/*.md`; `GET/PUT /api/agents/:name/prompt` and `PUT .../prompt/restore` (.bak single-level) support the Agent Activity prompt editor.
 - Weekly summaries are persisted in `weekly_insights` for parent review and IEP reporting.
 - API layer now includes SRS-driven queue building and mastery updates in `/api/items/*`.
 - **Parent PIN:** `parent_settings.parent_pin_hash` (bcrypt). `GET /api/settings/parent-pin`, `POST /api/settings/parent-pin`. Unlock: `POST /api/parent/verify-pin`. Frontend keeps an unlocked flag in `sessionStorage` for `/parent/*`.
@@ -84,7 +98,7 @@ flowchart TD
 - **FR-16 skill drop:** On each graded attempt, `/api/items/:id/attempt` computes **UTC calendar week** accuracy per skill; if below `weekly_drop_accuracy` (tuning) with enough attempts, applies **at most one** level decrease per skill per week, updates `student_skill_levels.last_weekly_drop_week_start`, and bumps `item_mastery.next_review_at` for recent misses (14 days).
 - **Writing flow (FR-30..FR-33):** writing uses seeded `writing_prompt` templates, Claude-rendered one-item sessions, rubric grading (`>=70` counts correct), and Tier-3->4 ignores response-time gate.
 - **Practice frustration (FR-5):** `GET /api/session/:id/frustration-context`, `GET /api/student/:studentId/tuning`, and `POST /api/session/:id/frustration-eval` feed `PracticePage` static thresholds plus additive `frustration_signal:*` checks (`evaluateFrustrationSignals`) before brain-break offers.
-- **IEP PDF:** `GET /api/export/iep-pdf` builds an A4 `pdf-lib` report (12-week tables + snapshots).
+- **IEP PDF:** `POST /api/iep/upload` (multer + `pdf-parse` v2 `PDFParse`) stores files under `backend/data/iep/` and plain text in `iep_documents`; `GET /api/iep/document` returns the active row preview for Settings. `GET /api/export/iep-pdf` builds an A4 `pdf-lib` report (12-week tables + snapshots).
 
 ## Frontend Route Shell (Design System Foundation)
 
@@ -121,10 +135,13 @@ flowchart TD
   todayPage --> planCard[TodayPlanCard]
 
   todayPage --> dashboardSkillsApi[GET /api/dashboard/skills]
+  topNav[TopNav] --> dashboardSkillsApi
   dashboardSkillsApi --> skillsTbl[skills]
   dashboardSkillsApi --> studentSkillLevelsTbl[student_skill_levels]
   dashboardSkillsApi --> itemMasteryTbl[item_mastery]
   dashboardSkillsApi --> suggestedSkillSvc[getSuggestedSkill]
+  dashboardSkillsApi --> practiceStreakSvc[computePracticeStreakDays]
+  practiceStreakSvc --> sessionsEndedUtc[sessions ended_at UTC]
 
   planCard --> sessionStartApi[POST /api/session/start]
   sessionStartApi --> sessionsTbl[sessions]
@@ -206,9 +223,8 @@ flowchart TD
   practicePage[PracticePage dispatch] --> skillViews[MathReadingSpellingTypingWriting views]
 
   queueRead[GET queue reading] --> ensureRead[ensureReadingQueueItems]
-  ensureRead --> genRead[skills-queue.generateReadingItem]
-  genRead --> claudeRead[Claude]
-  genRead --> itemsRead[items reading_passage]
+  ensureRead --> classicRead[reading-classic-excerpts pickClassicReadingExcerpt]
+  classicRead --> itemsRead[items reading_passage book_attribution metadata]
 
   queueSpell[GET queue spelling] --> ensureSpell[ensureSpellingQueueItems]
   ensureSpell --> spellBank[items spelling_word seeded bank]
@@ -233,11 +249,11 @@ flowchart TD
   gradeWrite --> rubricOut[criteria conventions sentence_variety main_idea detail]
 
   hintRead[POST /api/ai/hint reading] --> hintReadSvc[generateReadingHint Claude]
-  hintSpell[spelling TTS] --> speechSynth[browser SpeechSynthesis]
+  hintSpell[spelling Hear again] --> kokoroTts[GET /api/tts Kokoro WAV]
 ```
 
-- **Practice UI**: [`PracticePage.jsx`](frontend/src/pages/PracticePage.jsx) delegates rendering to [`PracticeSkillViews.jsx`](frontend/src/components/practice/PracticeSkillViews.jsx) per skill; spelling uses SpeechSynthesis; typing shows live WPM/accuracy vs target.
-- **Reading**: Each queued row is one passage with three comprehension questions; the client sends `reading_question_index` (0–2) per attempt; session completion counts attempts at **3×** `session_item_count` so five passages still equal fifteen graded interactions.
+- **Practice UI**: [`PracticePage.jsx`](frontend/src/pages/PracticePage.jsx) delegates rendering to [`PracticeSkillViews.jsx`](frontend/src/components/practice/PracticeSkillViews.jsx) per skill; spelling shows the target word on screen, then **Hear again** fetches Kokoro audio from `GET /api/tts`; typing shows live WPM/accuracy vs target.
+- **Reading**: New queue shortfall is filled from curated **public-domain book excerpts** (`reading-classic-excerpts.js`) with `book_attribution` in metadata instead of Claude-generated passages. Each queued row still has three comprehension questions; the client sends `reading_question_index` (0–2) per attempt; session completion counts attempts at **3×** `session_item_count` so five passages still equal fifteen graded interactions.
 
 ## CBT Break + Post-Session Checkout Flow
 
