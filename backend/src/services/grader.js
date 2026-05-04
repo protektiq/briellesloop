@@ -14,6 +14,7 @@ const READING_GRADER_PROMPT_PATH = path.resolve(__dirname, "..", "prompts", "rea
 const READING_HINT_PROMPT_PATH = path.resolve(__dirname, "..", "prompts", "reading-hint.md");
 const WRITING_GRADER_PROMPT_PATH = path.resolve(__dirname, "..", "prompts", "writing-grader.md");
 const JIUJITSU_HINT_PROMPT_PATH = path.resolve(__dirname, "..", "prompts", "jiujitsu-hint.md");
+const PROGRAMMING_HINT_PROMPT_PATH = path.resolve(__dirname, "..", "prompts", "programming-hint.md");
 
 const GRADER_PURPOSE = "math_grade";
 const HINT_PURPOSE = "math_hint";
@@ -21,6 +22,7 @@ const READING_GRADER_PURPOSE = "reading_grade";
 const READING_HINT_PURPOSE = "reading_hint";
 const WRITING_GRADER_PURPOSE = "writing_grade";
 const JIUJITSU_HINT_PURPOSE = "jiujitsu_hint";
+const PROGRAMMING_HINT_PURPOSE = "programming_hint";
 
 const GRADER_MAX_TOKENS = 400;
 const HINT_MAX_TOKENS = 400;
@@ -441,7 +443,7 @@ const gradeSpellingLocal = (item, studentResponse, responseSeconds) => {
   };
 };
 
-const stripJiujitsuNoise = (value) => {
+const stripMcqNoise = (value) => {
   let s = value.normalize("NFKC").trim().toLowerCase();
   s = s.replace(/^[“”"']+|[“”"']+$/g, "");
   s = s.replace(/^(answer|choice|option|letter)\s*[:#.)-]?\s*/i, "");
@@ -449,8 +451,8 @@ const stripJiujitsuNoise = (value) => {
   return s.trim();
 };
 
-const extractJiujitsuMcqLetter = (value) => {
-  const stripped = stripJiujitsuNoise(value);
+const extractMcqLetter = (value) => {
+  const stripped = stripMcqNoise(value);
   if (stripped.length === 1 && /^[a-d]$/i.test(stripped)) {
     return stripped;
   }
@@ -465,7 +467,8 @@ const extractJiujitsuMcqLetter = (value) => {
   return stripped;
 };
 
-const gradeJiujitsuLocal = (item, studentResponse, responseSeconds) => {
+/** Local grade for A–D multiple-choice items (jiu-jitsu knowledge, programming MCQ). */
+const gradeLetterMcqItem = (item, studentResponse, responseSeconds, feedbackPair) => {
   const cleanResponse = sanitizeStudentResponse(studentResponse);
   const cleanSeconds = sanitizeResponseSeconds(responseSeconds);
   const expectedRaw =
@@ -475,12 +478,12 @@ const gradeJiujitsuLocal = (item, studentResponse, responseSeconds) => {
         ? item.answer
         : "";
   if (!expectedRaw || expectedRaw.trim().length === 0) {
-    throw new Error("Jiu-jitsu item missing expected answer.");
+    throw new Error("MCQ item missing expected answer.");
   }
 
-  const expectedNorm = stripJiujitsuNoise(expectedRaw);
-  const studentNorm = stripJiujitsuNoise(cleanResponse);
-  const studentLetter = extractJiujitsuMcqLetter(cleanResponse);
+  const expectedNorm = stripMcqNoise(expectedRaw);
+  const studentNorm = stripMcqNoise(cleanResponse);
+  const studentLetter = extractMcqLetter(cleanResponse);
 
   let correct = false;
   if (expectedNorm.length === 1 && /^[a-d]$/i.test(expectedNorm)) {
@@ -489,16 +492,29 @@ const gradeJiujitsuLocal = (item, studentResponse, responseSeconds) => {
     correct = studentNorm === expectedNorm;
   }
 
-  const feedback = correct
-    ? "That matches the best answer here—nice recall."
-    : "Not quite. Read each choice slowly and pick the one that fits safety, respect, or the definition best.";
+  const feedback = correct ? feedbackPair.correct : feedbackPair.incorrect;
   return {
     correct,
     feedback: feedback.slice(0, FEEDBACK_MAX_LEN),
-    explanation: correct ? "" : "Compare the stem to each line before you choose.",
+    explanation: correct ? "" : feedbackPair.explanationWrong,
     response_time_seconds: cleanSeconds,
   };
 };
+
+const gradeJiujitsuLocal = (item, studentResponse, responseSeconds) =>
+  gradeLetterMcqItem(item, studentResponse, responseSeconds, {
+    correct: "That matches the best answer here—nice recall.",
+    incorrect:
+      "Not quite. Read each choice slowly and pick the one that fits safety, respect, or the definition best.",
+    explanationWrong: "Compare the stem to each line before you choose.",
+  });
+
+const gradeProgrammingMcqLocal = (item, studentResponse, responseSeconds) =>
+  gradeLetterMcqItem(item, studentResponse, responseSeconds, {
+    correct: "Yes — that matches the best answer.",
+    incorrect: "Not quite. Walk through each choice against the steps, then try again.",
+    explanationWrong: "Use the step boxes to eliminate choices that do not fit.",
+  });
 
 const gradeTypingLocal = (item, studentResponse, responseSeconds) => {
   const cleanResponse = sanitizeStudentResponse(studentResponse);
@@ -687,6 +703,9 @@ export const gradeAttempt = async (item, studentResponse, responseSeconds, optio
   if (skillName === "jiujitsu") {
     return gradeJiujitsuLocal(item, studentResponse, responseSeconds);
   }
+  if (skillName === "programming") {
+    return gradeProgrammingMcqLocal(item, studentResponse, responseSeconds);
+  }
   return gradeMathAttempt(item, studentResponse, responseSeconds);
 };
 
@@ -807,6 +826,47 @@ export const generateJiujitsuHint = async (item, responseSoFar) => {
 
   await recordGeneration({
     purpose: JIUJITSU_HINT_PURPOSE,
+    inputPrompt: userMessage,
+    inputHash,
+    output: validated,
+    tokensIn,
+    tokensOut,
+  });
+
+  return validated;
+};
+
+export const generateProgrammingHint = async (item, responseSoFar) => {
+  const sanitizedItem = sanitizeItem(item);
+  const cleanSoFar = sanitizeResponseSoFar(responseSoFar);
+
+  const systemPrompt = await loadPrompt(PROGRAMMING_HINT_PROMPT_PATH, "programming-hint.md");
+  const userMessage = JSON.stringify(
+    {
+      prompt: sanitizedItem.prompt,
+      structured_steps: sanitizedItem.structured_steps,
+      expected_answer: sanitizedItem.expected_answer,
+      response_so_far: cleanSoFar,
+    },
+    null,
+    2,
+  );
+  const inputHash = hashInput(PROGRAMMING_HINT_PURPOSE, systemPrompt, userMessage);
+
+  const cached = await findCachedGeneration(PROGRAMMING_HINT_PURPOSE, inputHash);
+  if (cached) {
+    try {
+      return validateHintOutput(cached);
+    } catch {
+      // fall through
+    }
+  }
+
+  const { parsed, tokensIn, tokensOut } = await callClaude(systemPrompt, userMessage, HINT_MAX_TOKENS);
+  const validated = validateHintOutput(parsed);
+
+  await recordGeneration({
+    purpose: PROGRAMMING_HINT_PURPOSE,
     inputPrompt: userMessage,
     inputHash,
     output: validated,

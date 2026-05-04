@@ -14,6 +14,7 @@ const SKILL_ICON_BY_NAME = {
   typing: '⌨️',
   writing: '📝',
   jiujitsu: '🥋',
+  programming: '💻',
 }
 
 const SKILL_DISPLAY_LABEL_BY_NAME = {
@@ -23,6 +24,7 @@ const SKILL_DISPLAY_LABEL_BY_NAME = {
   typing: 'Typing',
   writing: 'Writing',
   jiujitsu: 'Jiu Jitsu',
+  programming: 'Programming',
 }
 
 const clampNumber = (value, min, max, fallback) => {
@@ -276,7 +278,7 @@ const TodayPage = () => {
                 durationMinutes={skill.durationMinutes}
                 selected={skill.name === selectedSkillName}
                 suggestedToday={skill.name === suggestedSkillName}
-                onSelect={setSelectedSkillName}
+                onSelect={() => setSelectedSkillName(skill.name)}
               />
             ))}
           </div>

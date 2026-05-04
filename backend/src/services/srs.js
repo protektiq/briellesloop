@@ -201,7 +201,9 @@ export const calculateNextTier = (
 
   if (currentTier === 3) {
     const allowTier4ByTime =
-      normalizedSkillType === "writing" ? true : normalizedMasteryStats.all_responses_under_20s;
+      normalizedSkillType === "writing" || normalizedSkillType === "programming"
+        ? true
+        : normalizedMasteryStats.all_responses_under_20s;
     if (
       projectedTotalCorrect >= 6 &&
       normalizedMasteryStats.distinct_sessions_correct >= 3 &&

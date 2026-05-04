@@ -81,7 +81,7 @@ const useMoodChartData = (payload) =>
 
 const useOrderedSkillAccuracy = (payload) =>
   useMemo(() => {
-    const canonicalOrder = ['math', 'reading', 'spelling', 'typing', 'writing']
+    const canonicalOrder = ['math', 'reading', 'spelling', 'typing', 'writing', 'jiujitsu', 'programming']
     const sourceRows = Array.isArray(payload?.skill_accuracy) ? payload.skill_accuracy : []
     const byName = new Map()
     for (const row of sourceRows) {

@@ -2,7 +2,15 @@ import { query } from "../../db.js";
 import { parseAndValidateWeekStart, toUtcRange } from "../../services/dashboard-week.js";
 import { assertUuid, clampInt, optionalIsoDate } from "./validators.js";
 
-const SKILL_NAMES = new Set(["reading", "math", "spelling", "typing"]);
+const SKILL_NAMES = new Set([
+  "reading",
+  "math",
+  "spelling",
+  "typing",
+  "writing",
+  "jiujitsu",
+  "programming",
+]);
 
 /**
  * Simulation window [start, end) as ISO timestamptz strings from the simulate API.
@@ -33,7 +41,9 @@ const resolveSkillId = async (skillNameRaw) => {
   const skillName =
     typeof skillNameRaw === "string" ? skillNameRaw.trim().toLowerCase() : "";
   if (!SKILL_NAMES.has(skillName)) {
-    throw new Error("skill_name must be one of: reading, math, spelling, typing.");
+    throw new Error(
+      "skill_name must be one of: reading, math, spelling, typing, writing, jiujitsu, programming.",
+    );
   }
   const r = await query(`SELECT id FROM skills WHERE name = $1 LIMIT 1`, [skillName]);
   if (r.rowCount === 0) {
@@ -755,7 +765,10 @@ export const dbToolSchemas = [
       type: "object",
       properties: {
         student_id: { type: "string" },
-        skill_name: { type: "string", enum: ["reading", "math", "spelling", "typing"] },
+        skill_name: {
+          type: "string",
+          enum: ["reading", "math", "spelling", "typing", "writing", "jiujitsu", "programming"],
+        },
       },
       required: ["student_id", "skill_name"],
     },
@@ -767,7 +780,10 @@ export const dbToolSchemas = [
       type: "object",
       properties: {
         student_id: { type: "string" },
-        skill_name: { type: "string", enum: ["reading", "math", "spelling", "typing"] },
+        skill_name: {
+          type: "string",
+          enum: ["reading", "math", "spelling", "typing", "writing", "jiujitsu", "programming"],
+        },
       },
       required: ["student_id", "skill_name"],
     },

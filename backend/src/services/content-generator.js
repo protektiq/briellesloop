@@ -11,10 +11,13 @@ const __dirname = path.dirname(__filename);
 
 const PROMPT_PATH = path.resolve(__dirname, "..", "prompts", "math-generator.md");
 const WRITING_PROMPT_PATH = path.resolve(__dirname, "..", "prompts", "writing-generator.md");
+const PROGRAMMING_PROMPT_PATH = path.resolve(__dirname, "..", "prompts", "programming-generator.md");
 const PURPOSE = "math_generate";
 const WRITING_PURPOSE = "writing_generate";
+const PROGRAMMING_PURPOSE = "programming_generate";
 const MAX_TOKENS = 800;
 const WRITING_MAX_TOKENS = 1_000;
+const PROGRAMMING_MAX_TOKENS = 1_000;
 
 const PROMPT_MAX_LEN = 400;
 const STEP_LABEL_MAX_LEN = 40;
@@ -24,11 +27,21 @@ const ANSWER_UNIT_MAX_LEN = 24;
 const STEPS_MIN = 2;
 const STEPS_MAX = 4;
 
+const PROGRAMMING_PROMPT_MAX_LEN = 1_200;
+const PROGRAMMING_STEP_LABEL_MAX_LEN = 36;
+const PROGRAMMING_STEP_CONTENT_MAX_LEN = 160;
+const PROGRAMMING_TOPIC_MAX_LEN = 40;
+const PROGRAMMING_STEPS_MIN = 2;
+const PROGRAMMING_STEPS_MAX = 4;
+const PROGRAMMING_ANSWER_SNIPPET_MAX = 80;
+const PROGRAMMING_PROMPT_SNIPPET_MAX = 160;
+
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 let cachedSystemPrompt = null;
 let cachedWritingPrompt = null;
+let cachedProgrammingPrompt = null;
 
 const loadSystemPrompt = async () => {
   if (cachedSystemPrompt) {
@@ -52,6 +65,18 @@ const loadWritingPrompt = async () => {
   }
   cachedWritingPrompt = contents;
   return cachedWritingPrompt;
+};
+
+const loadProgrammingPrompt = async () => {
+  if (cachedProgrammingPrompt) {
+    return cachedProgrammingPrompt;
+  }
+  const contents = await fs.readFile(PROGRAMMING_PROMPT_PATH, "utf8");
+  if (typeof contents !== "string" || contents.trim().length < 100) {
+    throw new Error("programming-generator.md prompt is missing or too short.");
+  }
+  cachedProgrammingPrompt = contents;
+  return cachedProgrammingPrompt;
 };
 
 const assertString = (value, max, label) => {
@@ -216,6 +241,48 @@ const validateGeneratedItem = (parsed) => {
   };
 };
 
+const validateProgrammingGeneratedItem = (parsed) => {
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("Generated programming item must be an object.");
+  }
+  assertString(parsed.prompt, PROGRAMMING_PROMPT_MAX_LEN, "prompt");
+  if (!Array.isArray(parsed.structured_steps)) {
+    throw new Error("structured_steps must be an array.");
+  }
+  if (
+    parsed.structured_steps.length < PROGRAMMING_STEPS_MIN ||
+    parsed.structured_steps.length > PROGRAMMING_STEPS_MAX
+  ) {
+    throw new Error(
+      `structured_steps must have between ${PROGRAMMING_STEPS_MIN} and ${PROGRAMMING_STEPS_MAX} entries.`,
+    );
+  }
+  const cleanedSteps = parsed.structured_steps.map((step, index) => {
+    if (!step || typeof step !== "object") {
+      throw new Error(`structured_steps[${index}] must be an object.`);
+    }
+    assertString(step.label, PROGRAMMING_STEP_LABEL_MAX_LEN, `structured_steps[${index}].label`);
+    assertString(
+      step.content,
+      PROGRAMMING_STEP_CONTENT_MAX_LEN,
+      `structured_steps[${index}].content`,
+    );
+    return { label: step.label.trim(), content: step.content.trim() };
+  });
+  const answerRaw = typeof parsed.answer === "string" ? parsed.answer.trim().toLowerCase() : "";
+  if (!/^[a-d]$/.test(answerRaw)) {
+    throw new Error("answer must be a single letter a, b, c, or d.");
+  }
+  assertString(parsed.topic, PROGRAMMING_TOPIC_MAX_LEN, "topic");
+
+  return {
+    prompt: parsed.prompt.trim(),
+    structured_steps: cleanedSteps,
+    answer: answerRaw,
+    topic: parsed.topic.trim(),
+  };
+};
+
 const callClaude = async (systemPrompt, userMessage) => {
   const response = await claudeClient.messages.create({
     model: claudeModel,
@@ -235,6 +302,37 @@ const callClaude = async (systemPrompt, userMessage) => {
     parsed = JSON.parse(stripped);
   } catch (error) {
     throw new Error(`Could not parse Claude generator output as JSON: ${(error instanceof Error ? error.message : "unknown error")}`);
+  }
+  return {
+    parsed,
+    tokensIn: response.usage?.input_tokens ?? null,
+    tokensOut: response.usage?.output_tokens ?? null,
+  };
+};
+
+const callProgrammingClaude = async (systemPrompt, userMessage) => {
+  const response = await claudeClient.messages.create({
+    model: claudeModel,
+    max_tokens: PROGRAMMING_MAX_TOKENS,
+    system: systemPrompt,
+    messages: [
+      {
+        role: "user",
+        content: userMessage,
+      },
+    ],
+  });
+  const text = extractTextFromResponse(response);
+  const stripped = stripCodeFences(text);
+  let parsed;
+  try {
+    parsed = JSON.parse(stripped);
+  } catch (error) {
+    throw new Error(
+      `Could not parse Claude programming output as JSON: ${
+        error instanceof Error ? error.message : "unknown error"
+      }`,
+    );
   }
   return {
     parsed,
@@ -352,6 +450,84 @@ const fetchWritingSessionItemCount = async (studentId) => {
     return n;
   }
   return 1;
+};
+
+const fetchProgrammingScaffoldingTier = async (studentId) => {
+  const result = await query(
+    `
+      SELECT current_value
+      FROM student_tuning
+      WHERE student_id = $1::uuid
+        AND parameter_name = 'programming_scaffolding'
+      LIMIT 1
+    `,
+    [studentId],
+  );
+  const raw = Number.parseFloat(String(result.rows[0]?.current_value ?? "1"));
+  const tier = Math.floor(Number.isFinite(raw) ? raw : 1);
+  if (!Number.isInteger(tier) || tier < 1) {
+    return 1;
+  }
+  return Math.min(5, tier);
+};
+
+const fetchProgrammingSessionItemCount = async (studentId) => {
+  const result = await query(
+    `
+      SELECT current_value
+      FROM student_tuning
+      WHERE student_id = $1::uuid
+        AND parameter_name = ANY($2::text[])
+      ORDER BY CASE WHEN parameter_name = 'session_item_count_programming' THEN 0 ELSE 1 END
+      LIMIT 1
+    `,
+    [studentId, ["session_item_count_programming", "session_item_count"]],
+  );
+  const raw = result.rows[0]?.current_value;
+  const n = Number.parseInt(String(raw ?? "2"), 10);
+  if (Number.isInteger(n) && n >= 1 && n <= 3) {
+    return n;
+  }
+  return 2;
+};
+
+const fetchRecentProgrammingAttempts = async (studentId) => {
+  const result = await query(
+    `
+      SELECT
+        a.is_correct,
+        a.user_response,
+        i.prompt ->> 'text' AS prompt_text
+      FROM attempts a
+      INNER JOIN sessions s
+        ON s.id = a.session_id
+      INNER JOIN items i
+        ON i.id = a.item_id
+      INNER JOIN skills sk
+        ON sk.id = i.skill_id
+      WHERE s.student_id = $1::uuid
+        AND sk.name = 'programming'
+      ORDER BY a.attempted_at DESC
+      LIMIT 5
+    `,
+    [studentId],
+  );
+  return result.rows.map((row) => {
+    const ur = row.user_response && typeof row.user_response === "object" ? row.user_response : {};
+    const ans =
+      typeof ur.answer === "string"
+        ? ur.answer.trim().slice(0, PROGRAMMING_ANSWER_SNIPPET_MAX)
+        : "";
+    const p =
+      typeof row.prompt_text === "string"
+        ? row.prompt_text.replace(/\s+/g, " ").trim().slice(0, PROGRAMMING_PROMPT_SNIPPET_MAX)
+        : "";
+    return {
+      is_correct: row.is_correct === true,
+      answer: ans,
+      prompt_excerpt: p,
+    };
+  });
 };
 
 const sanitizeWritingTemplate = (template) => {
@@ -477,6 +653,96 @@ export const buildStudentContextForWriting = async (studentId) => {
     iep_goal_text: typeof writingSkill.iep_goal_text === "string" ? writingSkill.iep_goal_text.slice(0, 800) : "",
     session_item_count: sessionItemCount,
   };
+};
+
+export const buildStudentContextForProgramming = async (studentId) => {
+  if (typeof studentId !== "string" || !UUID_REGEX.test(studentId)) {
+    throw new Error("studentId must be a valid UUID.");
+  }
+  const [studentRow, programmingSkill, programmingLevel, scaffoldingTier, recentAttempts] =
+    await Promise.all([
+      fetchStudentRow(studentId),
+      fetchSkillRow("programming"),
+      fetchStudentSkillLevel(studentId, "programming"),
+      fetchProgrammingScaffoldingTier(studentId),
+      fetchRecentProgrammingAttempts(studentId),
+    ]);
+  return {
+    id: studentRow.id,
+    name: typeof studentRow.name === "string" ? studentRow.name.trim().slice(0, 60) : "Brielle",
+    grade: Number.parseInt(String(studentRow.grade), 10),
+    interests: Array.isArray(studentRow.interests) ? studentRow.interests : [],
+    programming_level: programmingLevel,
+    scaffolding_tier: scaffoldingTier,
+    iep_goal_text:
+      typeof programmingSkill.iep_goal_text === "string"
+        ? programmingSkill.iep_goal_text.slice(0, 800)
+        : "",
+    recent_programming_attempts: recentAttempts,
+  };
+};
+
+export const generateProgrammingItem = async (student, options = {}) => {
+  if (!student || typeof student !== "object") {
+    throw new Error("student must be an object.");
+  }
+  const programmingLevel = Number.parseInt(String(student.programming_level), 10);
+  if (!Number.isInteger(programmingLevel) || programmingLevel < 1 || programmingLevel > 10) {
+    throw new Error("student.programming_level must be an integer between 1 and 10.");
+  }
+  const scaffoldingTier = Number.parseInt(String(student.scaffolding_tier), 10);
+  if (!Number.isInteger(scaffoldingTier) || scaffoldingTier < 1 || scaffoldingTier > 5) {
+    throw new Error("student.scaffolding_tier must be an integer between 1 and 5.");
+  }
+  const systemPrompt = await loadProgrammingPrompt();
+  const nonce =
+    typeof options.nonce === "string" && options.nonce.length > 0 && options.nonce.length <= 64
+      ? options.nonce
+      : crypto.randomBytes(8).toString("hex");
+  const userMessage = JSON.stringify(
+    {
+      student_name: typeof student.name === "string" ? student.name.trim().slice(0, 60) : "Brielle",
+      grade: Number.parseInt(String(student.grade), 10),
+      programming_level: programmingLevel,
+      scaffolding_tier: scaffoldingTier,
+      interests: Array.isArray(student.interests)
+        ? student.interests
+            .filter((entry) => typeof entry === "string" && entry.trim().length > 0)
+            .map((entry) => entry.trim().slice(0, 40))
+            .slice(0, 8)
+        : [],
+      iep_goal_text:
+        typeof student.iep_goal_text === "string" ? student.iep_goal_text.slice(0, 800) : "",
+      recent_programming_attempts: Array.isArray(student.recent_programming_attempts)
+        ? student.recent_programming_attempts.slice(0, 5)
+        : [],
+      nonce,
+    },
+    null,
+    2,
+  );
+  const inputHash = hashInput(systemPrompt, `${PROGRAMMING_PURPOSE}\u0000${userMessage}`);
+
+  const cached = await findCachedGeneration(PROGRAMMING_PURPOSE, inputHash);
+  if (cached) {
+    try {
+      return validateProgrammingGeneratedItem(cached);
+    } catch {
+      // regenerate
+    }
+  }
+
+  const { parsed, tokensIn, tokensOut } = await callProgrammingClaude(systemPrompt, userMessage);
+  const validated = validateProgrammingGeneratedItem(parsed);
+  await recordGeneration({
+    purpose: PROGRAMMING_PURPOSE,
+    inputPrompt: userMessage,
+    inputHash,
+    output: validated,
+    tokensIn,
+    tokensOut,
+  });
+  return validated;
 };
 
 const validateWritingRendition = (parsed, template) => {
@@ -825,6 +1091,123 @@ export const ensureWritingQueueItems = async (studentId, writingSkillId, require
 
   for (const item of generatedItems) {
     await insertGeneratedWritingItem(studentId, writingSkillPk, writingLevel, item);
+  }
+
+  return {
+    generated: generatedItems.length,
+    eligibleBefore: eligible,
+    eligibleAfter: eligible + generatedItems.length,
+  };
+};
+
+const insertGeneratedProgrammingItem = async (studentId, programmingSkillId, programmingLevel, generated, scaffoldingTierUsed) => {
+  const itemResult = await query(
+    `
+      INSERT INTO items (
+        skill_id,
+        level,
+        item_type,
+        prompt,
+        answer,
+        metadata,
+        ai_generated
+      )
+      VALUES ($1, $2, 'programming_mcq', $3::jsonb, $4::jsonb, $5::jsonb, TRUE)
+      RETURNING id
+    `,
+    [
+      programmingSkillId,
+      programmingLevel,
+      JSON.stringify({ text: generated.prompt }),
+      JSON.stringify({ text: generated.answer }),
+      JSON.stringify({
+        structured_steps: generated.structured_steps,
+        topic: generated.topic,
+        scaffolding_tier_used: scaffoldingTierUsed,
+        generated_at: new Date().toISOString(),
+        source: "programming_generator_v1",
+      }),
+    ],
+  );
+  const itemId = itemResult.rows[0].id;
+
+  await query(
+    `
+      INSERT INTO item_mastery (
+        student_id,
+        item_id,
+        tier,
+        consecutive_correct,
+        total_attempts,
+        total_correct,
+        next_review_at
+      )
+      VALUES ($1, $2, 0, 0, 0, 0, NOW())
+      ON CONFLICT (student_id, item_id) DO NOTHING
+    `,
+    [studentId, itemId],
+  );
+
+  return itemId;
+};
+
+const countQueueEligibleProgrammingItems = async (studentId, programmingSkillId, programmingLevel) => {
+  const result = await query(
+    `
+      SELECT COUNT(*)::INT AS eligible_count
+      FROM items i
+      LEFT JOIN item_mastery im
+        ON im.item_id = i.id
+       AND im.student_id = $1
+      WHERE i.skill_id = $2
+        AND i.level = $3
+        AND i.item_type = 'programming_mcq'
+        AND i.ai_generated = TRUE
+        AND (im.tier IS NULL OR im.tier <= 2)
+        AND (im.next_review_at IS NULL OR im.next_review_at <= NOW())
+    `,
+    [studentId, programmingSkillId, programmingLevel],
+  );
+  return Number(result.rows[0]?.eligible_count ?? 0);
+};
+
+export const ensureProgrammingQueueItems = async (studentId, programmingSkillId, requiredCount) => {
+  if (typeof studentId !== "string" || !UUID_REGEX.test(studentId)) {
+    throw new Error("studentId must be a valid UUID.");
+  }
+  const programmingSkillPk = normalizeSkillsTableId(programmingSkillId, "programmingSkillId");
+  if (!Number.isInteger(requiredCount) || requiredCount < 1 || requiredCount > 20) {
+    throw new Error("requiredCount must be an integer between 1 and 20.");
+  }
+
+  const studentContext = await buildStudentContextForProgramming(studentId);
+  const programmingLevel = studentContext.programming_level;
+  const scaffoldingTier = studentContext.scaffolding_tier;
+  const eligible = await countQueueEligibleProgrammingItems(
+    studentId,
+    programmingSkillPk,
+    programmingLevel,
+  );
+  const shortfall = Math.max(0, requiredCount - eligible);
+  if (shortfall === 0) {
+    return { generated: 0, eligibleBefore: eligible, eligibleAfter: eligible };
+  }
+
+  const generatedItems = [];
+  for (let index = 0; index < shortfall; index += 1) {
+    const nonce = `${Date.now().toString(36)}-${index}-${crypto.randomBytes(4).toString("hex")}`;
+    const item = await generateProgrammingItem(studentContext, { nonce });
+    generatedItems.push(item);
+  }
+
+  for (const item of generatedItems) {
+    await insertGeneratedProgrammingItem(
+      studentId,
+      programmingSkillPk,
+      programmingLevel,
+      item,
+      scaffoldingTier,
+    );
   }
 
   return {

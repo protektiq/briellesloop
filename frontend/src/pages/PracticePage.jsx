@@ -49,6 +49,9 @@ const skillDisplayLabel = (skill) => {
   if (skill === 'jiujitsu') {
     return 'Jiu Jitsu · Knowledge'
   }
+  if (skill === 'programming') {
+    return 'Programming · Concepts'
+  }
   return 'Practice'
 }
 
@@ -235,6 +238,7 @@ const PracticePage = () => {
   const consecutiveWrongRef = useRef(0)
   const itemRenderedAtMsRef = useRef(Date.now())
   const tuningRowsRef = useRef([])
+  const hintUsedForCurrentItemRef = useRef(false)
 
   useEffect(() => {
     breakOfferReasonRef.current = breakOfferReason
@@ -333,6 +337,11 @@ const PracticePage = () => {
 
   const totalCount = queue.length
   const currentItem = queue[currentIndex] ?? null
+
+  useEffect(() => {
+    hintUsedForCurrentItemRef.current = false
+  }, [currentItem?.item_id])
+
   const isBusy = isSubmitting || isLoadingHint
   const promptText =
     typeof currentItem?.prompt?.text === 'string' ? currentItem.prompt.text : ''
@@ -737,6 +746,14 @@ const PracticePage = () => {
     if (safeSkillName === 'reading') {
       body.reading_question_index = readingQuestionIndex
     }
+    if (
+      safeSkillName === 'math' ||
+      safeSkillName === 'reading' ||
+      safeSkillName === 'jiujitsu' ||
+      safeSkillName === 'programming'
+    ) {
+      body.hint_used = Boolean(hintUsedForCurrentItemRef.current)
+    }
 
     try {
       setIsSubmitting(true)
@@ -900,7 +917,10 @@ const PracticePage = () => {
   }
 
   const hintEligible =
-    safeSkillName === 'math' || safeSkillName === 'reading' || safeSkillName === 'jiujitsu'
+    safeSkillName === 'math' ||
+    safeSkillName === 'reading' ||
+    safeSkillName === 'jiujitsu' ||
+    safeSkillName === 'programming'
 
   const handleHint = async () => {
     if (!currentItem || isBusy || !hintEligible) {
@@ -951,6 +971,7 @@ const PracticePage = () => {
         title: 'Try this next.',
         body: hintText,
       })
+      hintUsedForCurrentItemRef.current = true
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Could not load a hint.'
       setCoachState({
@@ -1113,6 +1134,23 @@ const PracticePage = () => {
     }
 
     if (safeSkillName === 'jiujitsu') {
+      return (
+        <MathSkillView
+          currentItem={currentItem}
+          structuredSteps={structuredSteps}
+          promptText={promptText}
+          isBusy={isBusy}
+          answer={answer}
+          onAnswerChange={setAnswer}
+          onKeyDown={handleKeyDown}
+          inputRef={inputRef}
+          inputDisabled={inputDisabled}
+          voiceMathEnabled={false}
+        />
+      )
+    }
+
+    if (safeSkillName === 'programming') {
       return (
         <MathSkillView
           currentItem={currentItem}

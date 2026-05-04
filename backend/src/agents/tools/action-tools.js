@@ -22,9 +22,11 @@ const CALIBRATION_PARAMS = new Set([
 const resolveSkillId = async (q, skillNameRaw) => {
   const skillName =
     typeof skillNameRaw === "string" ? skillNameRaw.trim().toLowerCase() : "";
-  const allowed = ["reading", "math", "spelling", "typing"];
+  const allowed = ["reading", "math", "spelling", "typing", "writing", "jiujitsu", "programming"];
   if (!allowed.includes(skillName)) {
-    throw new Error("skill_name must be reading, math, spelling, or typing.");
+    throw new Error(
+      "skill_name must be reading, math, spelling, typing, writing, jiujitsu, or programming.",
+    );
   }
   const r = await q(`SELECT id FROM skills WHERE name = $1 LIMIT 1`, [skillName]);
   if (r.rowCount === 0) {
@@ -811,7 +813,10 @@ export const actionToolSchemas = [
       type: "object",
       properties: {
         student_id: { type: "string" },
-        skill_name: { type: "string", enum: ["reading", "math", "spelling", "typing"] },
+        skill_name: {
+          type: "string",
+          enum: ["reading", "math", "spelling", "typing", "writing", "jiujitsu", "programming"],
+        },
         item_ids: { type: "array", items: { type: "string" } },
         rationale: { type: "string" },
       },
@@ -826,7 +831,10 @@ export const actionToolSchemas = [
       type: "object",
       properties: {
         student_id: { type: "string" },
-        skill_name: { type: "string", enum: ["reading", "math", "spelling", "typing"] },
+        skill_name: {
+          type: "string",
+          enum: ["reading", "math", "spelling", "typing", "writing", "jiujitsu", "programming"],
+        },
         level: { type: "integer" },
         topic: { type: "string" },
         count: { type: "integer" },
@@ -870,7 +878,10 @@ export const actionToolSchemas = [
       type: "object",
       properties: {
         student_id: { type: "string" },
-        skill_name: { type: "string", enum: ["reading", "math", "spelling", "typing"] },
+        skill_name: {
+          type: "string",
+          enum: ["reading", "math", "spelling", "typing", "writing", "jiujitsu", "programming"],
+        },
         concern_text: { type: "string" },
       },
       required: ["student_id", "concern_text"],

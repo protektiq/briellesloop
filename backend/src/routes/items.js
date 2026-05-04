@@ -1,6 +1,11 @@
 import { Router } from "express";
 import { buildSessionQueue } from "../services/queue-builder.js";
-import { ensureMathQueueItems, ensureWritingQueueItems } from "../services/content-generator.js";
+import {
+  ensureMathQueueItems,
+  ensureProgrammingQueueItems,
+  ensureWritingQueueItems,
+} from "../services/content-generator.js";
+import { updateProgrammingScaffoldingAfterAttempt } from "../services/programming-adaptation.js";
 import {
   ensureReadingQueueItems,
   ensureSpellingQueueItems,
@@ -46,6 +51,9 @@ const getSessionItemCountForSkill = (tuning, skillName) => {
   if (normalized === "writing") {
     return clampInteger(tuning.session_item_count_writing, 1, 3, 1);
   }
+  if (normalized === "programming") {
+    return clampInteger(tuning.session_item_count_programming, 1, 3, 2);
+  }
   return clampInteger(tuning.session_item_count, 3, 10, 5);
 };
 
@@ -85,6 +93,8 @@ const fetchStudentTuning = async (studentId) => {
         "tier_advance_response_time",
         "session_item_count",
         "session_item_count_writing",
+        "session_item_count_programming",
+        "programming_scaffolding",
         "weekly_drop_accuracy",
         "tier_advance_min_items",
       ],
@@ -157,6 +167,9 @@ router.get("/queue/:skill_id", async (req, res, next) => {
     if (sessionContext.skill_name === "writing") {
       await ensureWritingQueueItems(sessionContext.student_id, skillPrimaryKey, requestedCount);
     }
+    if (sessionContext.skill_name === "programming") {
+      await ensureProgrammingQueueItems(sessionContext.student_id, skillPrimaryKey, requestedCount);
+    }
 
     const queue = await buildSessionQueue(sessionContext.student_id, skillPrimaryKey, requestedCount);
 
@@ -180,7 +193,13 @@ router.post("/:id/attempt", async (req, res, next) => {
       response_seconds: responseSeconds,
       session_id: rawSessionId,
       reading_question_index: rawReadingQuestionIndex,
+      hint_used: rawHintUsed,
     } = req.body ?? {};
+
+    let hintUsedForAttempt = false;
+    if (rawHintUsed === true) {
+      hintUsedForAttempt = true;
+    }
 
     if (!isUuid(id)) {
       return res.status(400).json({
@@ -389,9 +408,10 @@ router.post("/:id/attempt", async (req, res, next) => {
           user_response,
           is_correct,
           response_time_seconds,
+          hint_used,
           ai_feedback
         )
-        VALUES ($1, $2, $3::jsonb, $4, $5, $6)
+        VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7)
         RETURNING id, attempted_at, user_response
       `,
       [
@@ -400,9 +420,18 @@ router.post("/:id/attempt", async (req, res, next) => {
         JSON.stringify(attemptUserResponse),
         isCorrect,
         parsedResponseSeconds,
+        hintUsedForAttempt,
         gradedResult.feedback,
       ],
     );
+
+    if (sessionContext.skill_name === "programming") {
+      await updateProgrammingScaffoldingAfterAttempt(client, sessionContext.student_id, {
+        isCorrect,
+        responseSeconds: parsedResponseSeconds,
+        hintUsed: hintUsedForAttempt,
+      });
+    }
 
     const attemptedAt = attemptInsertResult.rows[0].attempted_at;
     const nextReviewAt = calculateNextReviewAt(nextTier, attemptedAt);
