@@ -1,49 +1,27 @@
 import { Router } from "express";
-import {
-  AVAILABLE_VOICES,
-  ensureTtsReady,
-  isAllowedVoice,
-  isTtsReady,
-  synthesize,
-} from "../services/tts.js";
+import { AVAILABLE_VOICES, ensureTtsReady, isAllowedVoice, synthesize } from "../services/tts.js";
 
 const router = Router();
-
 const MAX_TEXT_LEN = 2_000;
 
 const validateText = (raw) => {
-  if (typeof raw !== "string") {
-    return { error: "text must be a string." };
-  }
+  if (typeof raw !== "string") return { error: "text must be a string." };
   const trimmed = raw.trim();
-  if (trimmed.length === 0) {
-    return { error: "text must be non-empty." };
-  }
-  if (trimmed.length > MAX_TEXT_LEN) {
-    return { error: `text must be at most ${MAX_TEXT_LEN} characters.` };
-  }
+  if (trimmed.length === 0) return { error: "text must be non-empty." };
+  if (trimmed.length > MAX_TEXT_LEN) return { error: `text must be at most ${MAX_TEXT_LEN} characters.` };
   return { text: trimmed };
 };
 
-router.get("/voices", (_req, res) => {
-  return res.json(AVAILABLE_VOICES);
-});
+router.get("/voices", (_req, res) => res.json(AVAILABLE_VOICES));
 
 router.get("/", async (req, res, next) => {
   try {
     try {
       await ensureTtsReady();
-    } catch {
+    } catch (err) {
       return res.status(503).json({
         error: "TTS unavailable",
-        message: "Kokoro TTS failed to load. Check server logs and disk/network for model fetch.",
-      });
-    }
-
-    if (!isTtsReady()) {
-      return res.status(503).json({
-        error: "TTS unavailable",
-        message: "Kokoro TTS is not ready.",
+        message: err.message,
       });
     }
 
@@ -53,7 +31,7 @@ router.get("/", async (req, res, next) => {
     }
 
     const rawVoice = req.query?.voice;
-    let voice = "af_sky";
+    let voice = "en_paul_neutral";
     if (rawVoice !== undefined && rawVoice !== null && String(rawVoice).trim() !== "") {
       const v = String(rawVoice).trim();
       if (!isAllowedVoice(v)) {

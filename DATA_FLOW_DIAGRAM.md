@@ -100,6 +100,9 @@ flowchart TD
 - **Writing flow (FR-30..FR-33):** writing uses seeded `writing_prompt` templates, Claude-rendered one-item sessions, rubric grading (`>=70` counts correct), and Tier-3->4 ignores response-time gate.
 - **Practice frustration (FR-5):** `GET /api/session/:id/frustration-context`, `GET /api/student/:studentId/tuning`, and `POST /api/session/:id/frustration-eval` feed `PracticePage` static thresholds plus additive `frustration_signal:*` checks (`evaluateFrustrationSignals`) before brain-break offers.
 - **IEP PDF:** `POST /api/iep/upload` (multer + `pdf-parse` v2 `PDFParse`) stores files under `backend/data/iep/` and plain text in `iep_documents`; `GET /api/iep/document` returns the active row preview for Settings. `GET /api/export/iep-pdf` builds an A4 `pdf-lib` report (12-week tables + snapshots).
+- **Upload abuse controls (new):** `POST /api/iep/upload` now includes per-IP rate limiting, `%PDF-` magic-byte signature validation before parsing, isolated parse execution in a worker-thread boundary, and a parse timeout fail-close path to reduce parser-DoS blast radius.
+- **URL abuse controls (new):** backend applies a global URL-length guard that returns `414 UriTooLong` before route matching when request URLs exceed policy limits.
+- **Dependency policy gate (new):** CI enforces reachable-runtime Socket vulnerability score threshold (`>=90`) via `scripts/check-socket-reachable-runtime.mjs` against `security/reachable-runtime-packages.json`.
 
 ## Frontend Route Shell (Design System Foundation)
 
