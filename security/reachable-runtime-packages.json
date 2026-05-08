@@ -1,0 +1,21 @@
+{
+  "packages": [
+    { "name": "express", "reason": "Backend HTTP routing and middleware runtime." },
+    { "name": "path-to-regexp", "reason": "Express route matching dependency." },
+    { "name": "pdf-parse", "reason": "Uploads endpoint parses untrusted PDF files." },
+    { "name": "multer", "reason": "Handles multipart upload ingestion." },
+    { "name": "pg", "reason": "Database access on all API endpoints." },
+    { "name": "bcryptjs", "reason": "Parent PIN hashing and verification." },
+    { "name": "node-cron", "reason": "Background agent scheduler." },
+    { "name": "@anthropic-ai/sdk", "reason": "AI generation and grading client." },
+    { "name": "pdf-lib", "reason": "IEP export PDF generation." },
+    { "name": "@pdf-lib/fontkit", "reason": "Custom font rendering for export PDFs." },
+    { "name": "cors", "reason": "Cross-origin request policy middleware." },
+    { "name": "dotenv", "reason": "Runtime environment configuration loader." },
+    { "name": "react", "reason": "Frontend runtime rendering." },
+    { "name": "react-dom", "reason": "Frontend runtime rendering." },
+    { "name": "react-router-dom", "reason": "Frontend route handling for user-controlled URLs." },
+    { "name": "zustand", "reason": "Frontend runtime state management." },
+    { "name": "recharts", "reason": "Frontend runtime chart rendering." }
+  ]
+}

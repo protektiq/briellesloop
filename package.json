@@ -9,10 +9,10 @@
   "scripts": {
     "dev:frontend": "npm run dev --workspace frontend",
     "dev:backend": "npm run dev --workspace backend",
-    "build": "npm run build --workspace frontend"
+    "build": "npm run build --workspace frontend",
+    "security:socket:reachable-runtime": "node scripts/check-socket-reachable-runtime.mjs"
   },
   "dependencies": {
-    "anthropic": "^0.0.0",
     "cors": "^2.8.6",
     "esbuild": "^0.28.0",
     "react-router-dom": "^7.14.2",

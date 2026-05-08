@@ -3,16 +3,19 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import multer from "multer";
-import { PDFParse } from "pdf-parse";
 import { randomUUID } from "node:crypto";
 import { getClient, query } from "../db.js";
 import { resolveStudentId } from "../services/student-resolve.js";
+import { createIpRateLimiter, hasPdfMagicHeader } from "../services/http-security.js";
+import { parsePdfTextIsolated } from "../services/pdf-parse-isolated.js";
 
 const router = Router();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const IEP_DATA_DIR = path.resolve(__dirname, "..", "..", "data", "iep");
 const MAX_BYTES = 10 * 1024 * 1024;
+const UPLOAD_PARSE_TIMEOUT_MS = 5_000;
+const uploadRateLimiter = createIpRateLimiter({ windowMs: 60_000, maxRequests: 6 });
 
 const parseStudentIdQuery = (queryValue) => {
   if (typeof queryValue !== "string" || queryValue.trim().length === 0) {
@@ -122,8 +125,9 @@ const uploadSinglePdf = (req, res, next) => {
   });
 };
 
-router.post("/upload", uploadSinglePdf, async (req, res, next) => {
+router.post("/upload", uploadRateLimiter, uploadSinglePdf, async (req, res, next) => {
   try {
+    const filePath = typeof req.file?.path === "string" ? req.file.path : "";
     const studentId = await resolveStudentId(
       typeof req.body?.student_id === "string" ? req.body.student_id : undefined,
     );
@@ -144,13 +148,14 @@ router.post("/upload", uploadSinglePdf, async (req, res, next) => {
     let extractedText = "";
     try {
       const buf = await fs.readFile(req.file.path);
-      const parser = new PDFParse({ data: buf });
-      try {
-        const textResult = await parser.getText();
-        extractedText = typeof textResult.text === "string" ? textResult.text : "";
-      } finally {
-        await parser.destroy();
+      if (!hasPdfMagicHeader(buf)) {
+        await fs.unlink(req.file.path).catch(() => {});
+        return res.status(400).json({
+          error: "InvalidPdf",
+          message: "PDF signature check failed. File must start with %PDF- header.",
+        });
       }
+      extractedText = await parsePdfTextIsolated(buf, UPLOAD_PARSE_TIMEOUT_MS);
     } catch {
       await fs.unlink(req.file.path).catch(() => {});
       return res.status(400).json({
